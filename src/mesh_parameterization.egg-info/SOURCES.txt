@@ -1,0 +1,17 @@
+README.md
+setup.py
+src/mesh_parameterization/__init__.py
+src/mesh_parameterization/heat_geodesics.py
+src/mesh_parameterization/hole_filling.py
+src/mesh_parameterization/laplacian.py
+src/mesh_parameterization/mds.py
+src/mesh_parameterization/parameterize.py
+src/mesh_parameterization.egg-info/PKG-INFO
+src/mesh_parameterization.egg-info/SOURCES.txt
+src/mesh_parameterization.egg-info/dependency_links.txt
+src/mesh_parameterization.egg-info/requires.txt
+src/mesh_parameterization.egg-info/top_level.txt
+tests/test_geodesics.py
+tests/test_laplacian.py
+tests/test_mds.py
+tests/test_parameterize.py
