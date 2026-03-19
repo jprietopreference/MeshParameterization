@@ -1,0 +1,7 @@
+build/
+build_wasm/
+.cache/
+.vscode/
+*.swp
+*.user
+CMakeUserPresets.json

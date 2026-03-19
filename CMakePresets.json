@@ -1,0 +1,52 @@
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "default",
+            "displayName": "Native (Debug)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "MESHPARAM_BUILD_TESTS": "ON",
+                "MESHPARAM_BUILD_CLI": "ON"
+            }
+        },
+        {
+            "name": "release",
+            "displayName": "Native (Release)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "MESHPARAM_BUILD_TESTS": "ON",
+                "MESHPARAM_BUILD_CLI": "ON"
+            }
+        },
+        {
+            "name": "wasm",
+            "displayName": "WebAssembly (Emscripten)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build_wasm",
+            "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "MESHPARAM_BUILD_WASM": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "default",
+            "configurePreset": "default"
+        },
+        {
+            "name": "release",
+            "configurePreset": "release"
+        },
+        {
+            "name": "wasm",
+            "configurePreset": "wasm"
+        }
+    ]
+}
