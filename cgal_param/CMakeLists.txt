@@ -25,7 +25,7 @@ FetchContent_MakeAvailable(eigen)
 # Boost (headers only — CGAL just needs header includes)
 FetchContent_Declare(
     boost
-    URL https://archives.boost.io/release/1.78.0/source/boost_1_78_0.tar.gz
+    URL https://archives.boost.io/release/1.85.0/source/boost_1_85_0.tar.gz
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 # Only populate, don't process CMakeLists (avoids building 400+ compiled Boost targets)
@@ -56,10 +56,22 @@ if(NOT cgal_POPULATED)
 endif()
 
 # Create a minimal CGAL interface target (header-only)
-# Glob all CGAL package include directories
+# Build a unified include directory to avoid 200+ -I flags (Windows cmd line limit)
+set(CGAL_UNIFIED_INCLUDE "${cgal_SOURCE_DIR}/unified_include")
+if(NOT EXISTS "${CGAL_UNIFIED_INCLUDE}/CGAL/basic.h")
+    message(STATUS "Creating unified CGAL include directory...")
+    file(GLOB cgal_pkg_dirs "${cgal_SOURCE_DIR}/*/include")
+    foreach(pkg_inc ${cgal_pkg_dirs})
+        file(GLOB_RECURSE pkg_headers RELATIVE "${pkg_inc}" "${pkg_inc}/*")
+        foreach(hdr ${pkg_headers})
+            if(NOT EXISTS "${CGAL_UNIFIED_INCLUDE}/${hdr}")
+                configure_file("${pkg_inc}/${hdr}" "${CGAL_UNIFIED_INCLUDE}/${hdr}" COPYONLY)
+            endif()
+        endforeach()
+    endforeach()
+endif()
 add_library(CGAL_headers INTERFACE)
-file(GLOB cgal_pkg_dirs "${cgal_SOURCE_DIR}/*/include")
-target_include_directories(CGAL_headers INTERFACE ${cgal_pkg_dirs})
+target_include_directories(CGAL_headers INTERFACE "${CGAL_UNIFIED_INCLUDE}")
 target_compile_definitions(CGAL_headers INTERFACE CGAL_DISABLE_GMP=1)
 
 # Add Boost include path (traditional layout for Boost 1.78)
@@ -122,14 +134,8 @@ if(CGALPARAM_BUILD_WASM)
     target_link_libraries(cgalparam_wasm PRIVATE cgalparam)
 
     set_target_properties(cgalparam_wasm PROPERTIES
+        OUTPUT_NAME "cgalparam"
         SUFFIX ".js"
-        LINK_FLAGS "\
-            -s WASM=1 \
-            -s EXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS'] \
-            -s ALLOW_MEMORY_GROWTH=1 \
-            -s MODULARIZE=1 \
-            -s EXPORT_NAME='CGALParam' \
-            -s ENVIRONMENT='web,worker' \
-            --bind"
+        LINK_FLAGS "-sWASM=1 -sALLOW_MEMORY_GROWTH=1 -sMODULARIZE=1 -sEXPORT_NAME=createCgalparamModule -sENVIRONMENT=web,worker --bind -O2"
     )
 endif()

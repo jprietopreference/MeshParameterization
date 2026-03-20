@@ -22,6 +22,10 @@ struct TriMesh {
 TriMesh load_gltf(const std::string& path);
 void save_gltf(const std::string& path, const TriMesh& mesh);
 
+/// Memory-based I/O (for WASM)
+TriMesh load_gltf_from_memory(const std::vector<uint8_t>& data);
+std::vector<uint8_t> save_gltf_to_memory(const TriMesh& mesh);
+
 /// Convert between Eigen mesh and CGAL Surface_mesh
 SurfaceMesh to_cgal_mesh(const TriMesh& mesh);
 TriMesh from_cgal_mesh(const SurfaceMesh& sm);

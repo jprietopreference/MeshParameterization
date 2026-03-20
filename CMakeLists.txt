@@ -106,15 +106,9 @@ if(MESHPARAM_BUILD_WASM)
     target_link_libraries(meshparam_wasm PRIVATE meshparam)
 
     set_target_properties(meshparam_wasm PROPERTIES
+        OUTPUT_NAME "meshparam"
         SUFFIX ".js"
-        LINK_FLAGS "\
-            -s WASM=1 \
-            -s EXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS'] \
-            -s ALLOW_MEMORY_GROWTH=1 \
-            -s MODULARIZE=1 \
-            -s EXPORT_NAME='MeshParam' \
-            -s ENVIRONMENT='web,worker' \
-            --bind"
+        LINK_FLAGS "-sWASM=1 -sALLOW_MEMORY_GROWTH=1 -sMODULARIZE=1 -sEXPORT_NAME=createMeshparamModule -sENVIRONMENT=web,worker --bind -O2"
     )
 endif()
 

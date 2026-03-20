@@ -1,0 +1,19 @@
+{
+  "name": "meshparam-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "npx playwright test",
+    "test:headed": "npx playwright test --headed"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^8.56.1",
+    "@babylonjs/loaders": "^8.56.1",
+    "@playwright/test": "^1.58.2",
+    "occt-import-js": "^0.0.23",
+    "vite": "^8.0.1"
+  }
+}

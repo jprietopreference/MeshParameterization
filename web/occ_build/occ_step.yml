@@ -1,0 +1,36 @@
+mainBuild:
+  name: occ_step.js
+  bindings:
+    # STEP reading
+    - symbol: STEPControl_Reader
+    - symbol: IFSelect_ReturnStatus
+    - symbol: Message_ProgressRange
+    # Shape types
+    - symbol: TopoDS
+    - symbol: TopoDS_Shape
+    - symbol: TopoDS_Face
+    - symbol: TopoDS_Compound
+    - symbol: TopAbs_ShapeEnum
+    - symbol: TopAbs_Orientation
+    # Exploration
+    - symbol: TopExp_Explorer
+    # Tessellation
+    - symbol: BRepMesh_IncrementalMesh
+    - symbol: BRep_Tool
+    - symbol: Poly_Triangulation
+    - symbol: TopLoc_Location
+    # Geometry
+    - symbol: gp_Pnt
+    - symbol: gp_Trsf
+    - symbol: gp_XYZ
+  emccFlags:
+    - -O3
+    - -sEXPORT_ES6=1
+    - -sUSE_ES6_IMPORT_META=0
+    - -sEXPORTED_RUNTIME_METHODS=['FS']
+    - -sINITIAL_MEMORY=100MB
+    - -sMAXIMUM_MEMORY=4GB
+    - -sALLOW_MEMORY_GROWTH=1
+    - -sMODULARIZE=1
+    - -sEXPORT_NAME=createOccModule
+    - -sENVIRONMENT=web,worker
