@@ -224,6 +224,17 @@ MethodResult run_heat(const std::vector<uint8_t>& input_glb, bool view_weighted)
         config.view_weighted = view_weighted;
 
         auto result = meshparam::parameterize(mesh, config);
+
+        // Check for NaN/Inf UVs
+        for (int i = 0; i < result.UV.rows(); ++i) {
+            if (!std::isfinite(result.UV(i, 0)) || !std::isfinite(result.UV(i, 1))) {
+                r.error = "UV contains NaN";
+                auto t1 = std::chrono::high_resolution_clock::now();
+                r.elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+                return r;
+            }
+        }
+
         auto metrics = meshparam::compute_distortion(result.V, result.F, result.UV);
 
         r.glb = meshparam::save_gltf_to_memory(result);
@@ -261,6 +272,16 @@ MethodResult run_cgal(const std::vector<uint8_t>& input_glb, cgalparam::ParamMet
         Eigen::MatrixXd UV = cgalparam::parameterize(sm, method);
         auto result = cgalparam::from_cgal_mesh(sm);
         result.UV = UV;
+
+        // Check for NaN/Inf UVs (CGAL solvers may silently diverge)
+        for (int i = 0; i < result.UV.rows(); ++i) {
+            if (!std::isfinite(result.UV(i, 0)) || !std::isfinite(result.UV(i, 1))) {
+                r.error = "UV contains NaN (solver diverged)";
+                auto t1 = std::chrono::high_resolution_clock::now();
+                r.elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+                return r;
+            }
+        }
 
         auto metrics = cgalparam::compute_distortion(result.V, result.F, result.UV);
 
