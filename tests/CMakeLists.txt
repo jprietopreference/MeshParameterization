@@ -23,3 +23,7 @@ target_link_libraries(meshparam_tests PRIVATE
 
 include(GoogleTest)
 gtest_discover_tests(meshparam_tests)
+
+# Debug tool for eigendecomposition analysis
+add_executable(debug_eigen debug_eigen.cpp)
+target_link_libraries(debug_eigen PRIVATE meshparam)

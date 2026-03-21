@@ -7,7 +7,7 @@ import subprocess, sys, os, re, concurrent.futures, time
 MESHES = [
     "cube_100mm", "cube_100mm_fillet_25mm", "sphere_R100mm",
     "torus_R50mm_r15mm", "torus_R200mm_r40mm",
-    "klein_bottle", "klein_bottle_occ", "teapot",
+    "klein_bottle", "klein_bottle_occ", "teapot_occ", "0627778",
     "cgalref_nefertiti", "cgalref_three_peaks", "cgalref_head", "cgalref_mushroom",
 ]
 
@@ -97,6 +97,8 @@ def main():
             jobs.append((mesh, "heat", None))
         jobs.append((mesh, "cgal_conformal", "conformal"))
         jobs.append((mesh, "cgal_arap", "arap"))
+        jobs.append((mesh, "cgal_authalic", "authalic"))
+        jobs.append((mesh, "cgal_mvc", "mvc"))
 
     print(f"Running {len(jobs)} jobs in parallel...")
     t0 = time.time()
@@ -127,7 +129,7 @@ def main():
     print(f"\nCompleted in {elapsed:.0f}s")
 
     # Sort results by mesh order then method
-    method_order = {"heat": 0, "cgal_conformal": 1, "cgal_arap": 2}
+    method_order = {"heat": 0, "cgal_conformal": 1, "cgal_arap": 2, "cgal_authalic": 3, "cgal_mvc": 4}
     mesh_order = {m: i for i, m in enumerate(MESHES)}
     results.sort(key=lambda r: (mesh_order.get(r.get("name",""), 99), method_order.get(r.get("method",""), 99)))
 
