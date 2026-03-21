@@ -99,10 +99,11 @@ async function apiTessellate(stepBuffer) {
     return await r.arrayBuffer();
 }
 
-async function apiParameterize(glbBuffer, method, viewWeighted) {
+async function apiParameterize(glbBuffer, method, viewWeighted, forceHeal) {
     const params = new URLSearchParams();
     if (method !== 'auto') params.set('method', method);
     if (viewWeighted) params.set('viewWeighted', 'true');
+    if (forceHeal) params.set('heal', 'true');
     const r = await fetch(`${API}/api/parameterize?${params}`, {
         method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: glbBuffer,
     });
@@ -155,16 +156,18 @@ $('fileInput').addEventListener('change', async (e) => {
 $('paramBtn').addEventListener('click', async () => {
     const method = $('methodSelect').value;
     const viewWeighted = $('viewWeighted')?.checked || false;
+    const forceHeal = $('forceHeal')?.checked || false;
     if (!state.inputGlb) return;
 
     $('paramBtn').disabled = true;
     $('paramInfo').textContent = '';
     const label = method === 'auto' ? 'all methods (broker)' : method;
-    setStatus(`Running ${label} on server...`, 'working');
+    const healLabel = forceHeal ? ' + mesh healing' : '';
+    setStatus(`Running ${label}${healLabel} on server...`, 'working');
 
     try {
         const t0 = performance.now();
-        const result = await apiParameterize(state.inputGlb, method, viewWeighted);
+        const result = await apiParameterize(state.inputGlb, method, viewWeighted, forceHeal);
         const elapsed = performance.now() - t0;
 
         state.resultGlb = result.glb;

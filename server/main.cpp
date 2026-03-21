@@ -41,16 +41,14 @@ void heal_mesh(std::vector<uint8_t>& glb_data) {
 
     for (int i = 0; i < m; ++i) {
         int i0 = mesh.F(i, 0), i1 = mesh.F(i, 1), i2 = mesh.F(i, 2);
-        // Degenerate: duplicate vertex indices
         if (i0 == i1 || i1 == i2 || i0 == i2) { keep[i] = false; removed++; continue; }
-        // Degenerate: zero/tiny area
         Eigen::Vector3d e1 = mesh.V.row(i1) - mesh.V.row(i0);
         Eigen::Vector3d e2 = mesh.V.row(i2) - mesh.V.row(i0);
         double area = e1.cross(e2).norm() * 0.5;
         if (area < min_area) { keep[i] = false; removed++; }
     }
 
-    if (removed == 0) return; // nothing to heal
+    if (removed == 0) return;
 
     std::cout << "[heal] Removed " << removed << " degenerate triangles (" << m << " → " << (m - removed) << ")" << std::endl;
 
@@ -62,7 +60,7 @@ void heal_mesh(std::vector<uint8_t>& glb_data) {
     }
     mesh.F = newF;
 
-    // Remove unreferenced vertices
+    // Remove unreferenced vertices — preserve normals
     std::vector<bool> used(n, false);
     for (int i = 0; i < mesh.num_faces(); ++i) {
         used[mesh.F(i, 0)] = true;
@@ -76,8 +74,15 @@ void heal_mesh(std::vector<uint8_t>& glb_data) {
     }
 
     Eigen::MatrixXd newV(new_n, 3);
+    Eigen::MatrixXd newN;
+    bool has_normals = mesh.has_normals();
+    if (has_normals) newN.resize(new_n, 3);
+
     for (int i = 0; i < n; ++i) {
-        if (remap[i] >= 0) newV.row(remap[i]) = mesh.V.row(i);
+        if (remap[i] >= 0) {
+            newV.row(remap[i]) = mesh.V.row(i);
+            if (has_normals) newN.row(remap[i]) = mesh.N.row(i);
+        }
     }
     for (int i = 0; i < mesh.num_faces(); ++i) {
         mesh.F(i, 0) = remap[mesh.F(i, 0)];
@@ -85,8 +90,8 @@ void heal_mesh(std::vector<uint8_t>& glb_data) {
         mesh.F(i, 2) = remap[mesh.F(i, 2)];
     }
     mesh.V = newV;
+    if (has_normals) mesh.N = newN;
 
-    // Re-serialize
     glb_data = meshparam::save_gltf_to_memory(mesh);
 }
 
@@ -300,8 +305,11 @@ int main(int argc, char* argv[]) {
 
         std::vector<uint8_t> input(req.body.begin(), req.body.end());
 
-        // Heal degenerate triangles before parameterization
-        heal_mesh(input);
+        // Heal degenerate triangles if requested
+        bool do_heal = req.has_param("heal") && req.get_param_value("heal") == "true";
+        if (do_heal) {
+            heal_mesh(input);
+        }
 
         // Determine which methods to run
         struct MethodDef { std::string name; };
