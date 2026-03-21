@@ -463,7 +463,13 @@ int main(int argc, char* argv[]) {
                 } else if (mdef.name == "cgal_conformal") {
                     results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal", view_weighted, input_original);
                 } else if (mdef.name == "cgal_arap") {
+                    // ARAP: try welded first, fall back to healed split-vertex mesh
+                    // (welding can change topology causing ARAP to diverge)
                     results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::ARAP, "cgal_arap", view_weighted, input_original);
+                    if (!results[i].success) {
+                        std::cout << "  [broker] cgal_arap failed on welded, retrying on split-vertex mesh" << std::endl;
+                        results[i] = run_cgal(input, cgalparam::ParamMethod::ARAP, "cgal_arap", false, {});
+                    }
                 } else if (mdef.name == "cgal_authalic") {
                     results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic", view_weighted, input_original);
                 } else if (mdef.name == "cgal_mvc") {
