@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mesh Parameterization</title>
     <link rel="stylesheet" href="style.css">
-    <!-- BabylonJS loaded via ES modules in app.js -->
 </head>
 <body>
     <div id="app">
@@ -16,37 +15,22 @@
                 <h2>1. Input</h2>
                 <label class="file-btn" for="fileInput">Choose File (.glb / .step)</label>
                 <input type="file" id="fileInput" accept=".glb,.glTF,.step,.stp,.STEP,.STP" hidden>
-                <div class="row">
-                    <label>
-                        <input type="checkbox" id="autoRemesh" checked> Auto-remesh STEP imports
-                    </label>
-                </div>
                 <div id="fileInfo" class="info-text">No file loaded</div>
             </section>
 
-            <section class="panel" id="remeshPanel" style="display:none">
-                <h2>2. Remesh (optional)</h2>
-                <div class="row">
-                    <label>Max triangles</label>
-                    <input type="number" id="targetTris" value="5000" min="100" max="100000" step="100">
-                </div>
-                <button id="remeshBtn" class="action-btn" disabled>Isotropic Remesh (Gmsh)</button>
-                <div id="remeshInfo" class="info-text"></div>
-            </section>
-
             <section class="panel" id="paramPanel" style="display:none">
-                <h2>3. Parameterize</h2>
+                <h2>2. Parameterize</h2>
                 <div class="row">
                     <label>Method</label>
                     <select id="methodSelect">
-                        <optgroup label="Heat-Geodesic (paper)">
-                            <option value="heat" selected>Heat Geodesic + MDS</option>
+                        <option value="auto" selected>Auto (best of all)</option>
+                        <optgroup label="Heat-Geodesic">
+                            <option value="heat">Heat Geodesic + MDS</option>
                         </optgroup>
                         <optgroup label="CGAL">
                             <option value="cgal_conformal">Discrete Conformal</option>
                             <option value="cgal_arap">ARAP</option>
                             <option value="cgal_authalic">Discrete Authalic</option>
-                            <option value="cgal_mvc">Mean Value Coordinates</option>
                         </optgroup>
                     </select>
                 </div>
@@ -60,7 +44,7 @@
             </section>
 
             <section class="panel" id="viewPanel" style="display:none">
-                <h2>4. Display</h2>
+                <h2>3. Display</h2>
                 <div class="row">
                     <label>Texture</label>
                     <select id="textureSelect">
@@ -79,16 +63,26 @@
             <section class="panel" id="metricsPanel" style="display:none">
                 <h2>Metrics</h2>
                 <table id="metricsTable">
+                    <tr><td>Winner</td><td id="metMethod">-</td></tr>
                     <tr><td>Vertices</td><td id="metVerts">-</td></tr>
                     <tr><td>Triangles</td><td id="metTris">-</td></tr>
                     <tr><td>STEP → GLB</td><td id="metStepTime">-</td></tr>
-                    <tr><td>Remesh time</td><td id="metRemeshTime">-</td></tr>
                     <tr><td>Param time</td><td id="metParamTime">-</td></tr>
-                    <tr><td>Angle distortion (mean)</td><td id="metAngle">-</td></tr>
-                    <tr><td>Angle distortion (max)</td><td id="metAngleMax">-</td></tr>
-                    <tr><td>Area distortion (mean)</td><td id="metArea">-</td></tr>
-                    <tr><td>L2 stretch (mean)</td><td id="metStretch">-</td></tr>
-                    <tr><td>Isometric RMS</td><td id="metIso">-</td></tr>
+                    <tr><td>Angle (mean)</td><td id="metAngle">-</td></tr>
+                    <tr><td>Angle (max)</td><td id="metAngleMax">-</td></tr>
+                    <tr><td>Area (mean)</td><td id="metArea">-</td></tr>
+                    <tr><td>Stretch (mean)</td><td id="metStretch">-</td></tr>
+                    <tr><td>Score</td><td id="metScore">-</td></tr>
+                </table>
+            </section>
+
+            <section class="panel" id="comparisonPanel" style="display:none">
+                <h2>Method Comparison</h2>
+                <table id="comparisonTable">
+                    <thead>
+                        <tr><th>Method</th><th>Angle</th><th>Stretch</th><th>Time</th><th>Score</th></tr>
+                    </thead>
+                    <tbody id="comparisonBody"></tbody>
                 </table>
             </section>
 
@@ -96,7 +90,7 @@
                 <button id="exportBtn" class="action-btn">Export Result (.glb)</button>
             </section>
 
-            <div id="statusBar">Ready</div>
+            <div id="statusBar">Connecting to server...</div>
         </aside>
 
         <main id="viewport">

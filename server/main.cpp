@@ -1,14 +1,12 @@
-// Mesh Parameterization HTTP Server
-// Serves parameterization API + static web frontend.
+// Mesh Parameterization Broker Server
+// Runs multiple parameterization methods in parallel, picks the best result.
 
 #include "httplib.h"
 
-// Heat-geodesic parameterizer
 #include "meshparam/gltf_io.h"
 #include "meshparam/parameterizer.h"
 #include "meshparam/distortion.h"
 
-// CGAL parameterizer
 #include "cgalparam/gltf_io.h"
 #include "cgalparam/cgal_parameterize.h"
 #include "cgalparam/seam_cut.h"
@@ -18,46 +16,183 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
+#include <thread>
+#include <mutex>
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
+#include <algorithm>
+#include <cmath>
+#include <atomic>
 
-namespace {
+// ============================================================
+// Method result
+// ============================================================
+struct MethodResult {
+    std::string method;
+    bool success = false;
+    std::string error;
+    double elapsed_ms = 0;
+    double angle_mean = 999;
+    double angle_max = 999;
+    double area_mean = 0;
+    double area_std = 999;
+    double stretch_mean = 999;
+    double stretch_max = 999;
+    double iso_rms = -1;
+    int vertices = 0;
+    int faces = 0;
+    std::vector<uint8_t> glb;
 
-std::string metrics_json(const meshparam::DistortionMetrics& m, int nv, int nf, double elapsed_ms) {
-    std::ostringstream oss;
-    oss << "{\"vertices\":" << nv
-        << ",\"faces\":" << nf
-        << ",\"elapsed_ms\":" << elapsed_ms
-        << ",\"angle_mean\":" << m.mean_angle_distortion
-        << ",\"angle_max\":" << m.max_angle_distortion
-        << ",\"area_mean\":" << m.mean_area_distortion
-        << ",\"stretch_mean\":" << m.mean_stretch
-        << ",\"stretch_max\":" << m.max_stretch
-        << ",\"iso_rms\":" << m.isometric_rms
-        << "}";
-    return oss.str();
+    // Composite quality score (lower = better)
+    double score() const {
+        if (!success) return 1e18;
+        // Weighted: angle distortion (40%), stretch (40%), area uniformity (20%)
+        return angle_mean * 0.4 + std::log1p(stretch_mean) * 10.0 * 0.4 + area_std * 0.2;
+    }
+
+    std::string to_json() const {
+        std::ostringstream o;
+        o << "{\"method\":\"" << method << "\""
+          << ",\"success\":" << (success ? "true" : "false");
+        if (!success) {
+            o << ",\"error\":\"" << error << "\"";
+        } else {
+            o << ",\"elapsed_ms\":" << elapsed_ms
+              << ",\"vertices\":" << vertices
+              << ",\"faces\":" << faces
+              << ",\"angle_mean\":" << angle_mean
+              << ",\"angle_max\":" << angle_max
+              << ",\"area_mean\":" << area_mean
+              << ",\"area_std\":" << area_std
+              << ",\"stretch_mean\":" << stretch_mean
+              << ",\"stretch_max\":" << stretch_max
+              << ",\"iso_rms\":" << iso_rms
+              << ",\"score\":" << score();
+        }
+        o << "}";
+        return o.str();
+    }
+};
+
+// ============================================================
+// Run individual methods
+// ============================================================
+MethodResult run_heat(const std::vector<uint8_t>& input_glb, bool view_weighted) {
+    MethodResult r;
+    r.method = "heat";
+    auto t0 = std::chrono::high_resolution_clock::now();
+    try {
+        auto mesh = meshparam::load_gltf_from_memory(input_glb);
+        meshparam::ParamConfig config;
+        config.auto_detect_fill = true;
+        config.use_poisson_fill = true;
+        config.view_weighted = view_weighted;
+
+        auto result = meshparam::parameterize(mesh, config);
+        auto metrics = meshparam::compute_distortion(result.V, result.F, result.UV);
+
+        r.glb = meshparam::save_gltf_to_memory(result);
+        r.success = true;
+        r.vertices = result.num_vertices();
+        r.faces = result.num_faces();
+        r.angle_mean = metrics.mean_angle_distortion;
+        r.angle_max = metrics.max_angle_distortion;
+        r.area_mean = metrics.mean_area_distortion;
+        r.area_std = metrics.std_area_distortion;
+        r.stretch_mean = metrics.mean_stretch;
+        r.stretch_max = metrics.max_stretch;
+        r.iso_rms = metrics.isometric_rms;
+    } catch (const std::exception& e) {
+        r.error = e.what();
+    }
+    auto t1 = std::chrono::high_resolution_clock::now();
+    r.elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    return r;
 }
 
-std::string metrics_json(const cgalparam::DistortionMetrics& m, int nv, int nf, double elapsed_ms) {
-    std::ostringstream oss;
-    oss << "{\"vertices\":" << nv
-        << ",\"faces\":" << nf
-        << ",\"elapsed_ms\":" << elapsed_ms
-        << ",\"angle_mean\":" << m.mean_angle_distortion
-        << ",\"angle_max\":" << m.max_angle_distortion
-        << ",\"area_mean\":" << m.mean_area_distortion
-        << ",\"stretch_mean\":" << m.mean_stretch
-        << ",\"stretch_max\":" << m.max_stretch
-        << "}";
-    return oss.str();
+MethodResult run_cgal(const std::vector<uint8_t>& input_glb, cgalparam::ParamMethod method, const std::string& method_name) {
+    MethodResult r;
+    r.method = method_name;
+    auto t0 = std::chrono::high_resolution_clock::now();
+    try {
+        auto tri = cgalparam::load_gltf_from_memory(input_glb);
+        auto sm = cgalparam::to_cgal_mesh(tri);
+
+        if (CGAL::is_closed(sm)) {
+            auto cut = cgalparam::cut_to_disk(sm);
+            sm = cut.cut_mesh;
+        }
+
+        Eigen::MatrixXd UV = cgalparam::parameterize(sm, method);
+        auto result = cgalparam::from_cgal_mesh(sm);
+        result.UV = UV;
+
+        auto metrics = cgalparam::compute_distortion(result.V, result.F, result.UV);
+
+        r.glb = cgalparam::save_gltf_to_memory(result);
+        r.success = true;
+        r.vertices = result.num_vertices();
+        r.faces = result.num_faces();
+        r.angle_mean = metrics.mean_angle_distortion;
+        r.angle_max = metrics.max_angle_distortion;
+        r.area_mean = metrics.mean_area_distortion;
+        r.area_std = metrics.std_area_distortion;
+        r.stretch_mean = metrics.mean_stretch;
+        r.stretch_max = metrics.max_stretch;
+    } catch (const std::exception& e) {
+        r.error = e.what();
+    }
+    auto t1 = std::chrono::high_resolution_clock::now();
+    r.elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    return r;
 }
 
-} // anonymous namespace
+// ============================================================
+// STEP tessellation via external CLI
+// ============================================================
+std::vector<uint8_t> tessellate_step(const std::string& occ_cli, const std::string& step_data, double deflection) {
+    // Use thread-safe temp file names
+    // Use absolute temp paths to avoid working directory issues
+    auto tid = std::this_thread::get_id();
+    std::ostringstream ss;
+    // Use system temp directory
+    const char* tmp_dir = std::getenv("TEMP");
+    if (!tmp_dir) tmp_dir = std::getenv("TMP");
+    if (!tmp_dir) tmp_dir = ".";
+    ss << tmp_dir << "/meshparam_" << tid;
+    std::string tmp_step = ss.str() + ".step";
+    std::string tmp_glb = ss.str() + ".glb";
 
+    { std::ofstream f(tmp_step, std::ios::binary); f.write(step_data.data(), step_data.size()); }
+
+    std::string cmd = occ_cli + " \"" + tmp_step + "\" \"" + tmp_glb + "\" --deflection " + std::to_string(deflection);
+    int ret = std::system(cmd.c_str());
+    std::remove(tmp_step.c_str());
+
+    if (ret != 0) {
+        std::remove(tmp_glb.c_str());
+        throw std::runtime_error("OCC tessellation failed");
+    }
+
+    std::ifstream f(tmp_glb, std::ios::binary | std::ios::ate);
+    size_t sz = f.tellg(); f.seekg(0);
+    std::vector<uint8_t> data(sz);
+    f.read(reinterpret_cast<char*>(data.data()), sz);
+    f.close();
+    std::remove(tmp_glb.c_str());
+    return data;
+}
+
+// ============================================================
+// Main
+// ============================================================
 int main(int argc, char* argv[]) {
     int port = 8080;
     std::string web_root = "../web";
     std::string occ_cli = "";
+    std::string gmsh_cli = "";
     int threads = 8;
 
     for (int i = 1; i < argc; ++i) {
@@ -65,178 +200,173 @@ int main(int argc, char* argv[]) {
         if (arg == "--port" && i + 1 < argc) port = std::stoi(argv[++i]);
         if (arg == "--web-root" && i + 1 < argc) web_root = argv[++i];
         if (arg == "--occ-cli" && i + 1 < argc) occ_cli = argv[++i];
+        if (arg == "--gmsh-cli" && i + 1 < argc) gmsh_cli = argv[++i];
         if (arg == "--threads" && i + 1 < argc) threads = std::stoi(argv[++i]);
     }
 
     httplib::Server svr;
-
-    // Allow large request bodies (up to 100 MB for large meshes/STEP files)
     svr.set_payload_max_length(100 * 1024 * 1024);
-
-    // Thread pool for concurrent requests
     svr.new_task_queue = [threads] { return new httplib::ThreadPool(threads); };
 
-    // CORS headers on all responses
-    svr.set_post_routing_handler([](const auto& req, auto& res) {
+    // CORS on all responses
+    svr.set_post_routing_handler([](const auto&, auto& res) {
         res.set_header("Access-Control-Allow-Origin", "*");
         res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         res.set_header("Access-Control-Allow-Headers", "Content-Type");
-        res.set_header("Access-Control-Expose-Headers", "X-Metrics");
+        res.set_header("Access-Control-Expose-Headers", "X-Metrics, X-Method, X-All-Methods");
     });
 
-    // --- Health check ---
-    svr.Get("/api/health", [](const httplib::Request&, httplib::Response& res) {
-        res.set_content("{\"status\":\"ok\"}", "application/json");
-    });
-
-    // --- Heat parameterization ---
-    svr.Post("/api/parameterize/heat", [](const httplib::Request& req, httplib::Response& res) {
-        auto t0 = std::chrono::high_resolution_clock::now();
-
-        try {
-            std::vector<uint8_t> input(req.body.begin(), req.body.end());
-            auto mesh = meshparam::load_gltf_from_memory(input);
-
-            meshparam::ParamConfig config;
-            config.auto_detect_fill = true;
-            config.use_poisson_fill = true;
-
-            if (req.has_param("viewWeighted") && req.get_param_value("viewWeighted") == "true") {
-                config.view_weighted = true;
-            }
-
-            auto result = meshparam::parameterize(mesh, config);
-            auto output = meshparam::save_gltf_to_memory(result);
-
-            auto t1 = std::chrono::high_resolution_clock::now();
-            double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-            auto metrics = meshparam::compute_distortion(result.V, result.F, result.UV);
-            std::string mj = metrics_json(metrics, result.num_vertices(), result.num_faces(), ms);
-
-            res.set_header("X-Metrics", mj);
-            // CORS: handled globally
-            res.set_header("Access-Control-Expose-Headers", "X-Metrics");
-            res.set_content(std::string(output.begin(), output.end()), "model/gltf-binary");
-
-        } catch (const std::exception& e) {
-            res.status = 500;
-            res.set_content(std::string("{\"error\":\"") + e.what() + "\"}", "application/json");
-        }
-    });
-
-    // --- CGAL parameterization ---
-    svr.Post("/api/parameterize/cgal", [](const httplib::Request& req, httplib::Response& res) {
-        auto t0 = std::chrono::high_resolution_clock::now();
-
-        try {
-            std::vector<uint8_t> input(req.body.begin(), req.body.end());
-            auto tri = cgalparam::load_gltf_from_memory(input);
-            auto sm = cgalparam::to_cgal_mesh(tri);
-
-            // Cut seam if closed
-            if (CGAL::is_closed(sm)) {
-                auto cut = cgalparam::cut_to_disk(sm);
-                sm = cut.cut_mesh;
-            }
-
-            // Parse method
-            std::string method_str = req.has_param("method") ? req.get_param_value("method") : "conformal";
-            cgalparam::ParamMethod method = cgalparam::ParamMethod::DiscreteConformal;
-            if (method_str == "arap") method = cgalparam::ParamMethod::ARAP;
-            else if (method_str == "authalic") method = cgalparam::ParamMethod::DiscreteAuthalic;
-            else if (method_str == "mvc") method = cgalparam::ParamMethod::MeanValue;
-
-            Eigen::MatrixXd UV = cgalparam::parameterize(sm, method);
-            auto result = cgalparam::from_cgal_mesh(sm);
-            result.UV = UV;
-
-            auto output = cgalparam::save_gltf_to_memory(result);
-
-            auto t1 = std::chrono::high_resolution_clock::now();
-            double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-            auto metrics = cgalparam::compute_distortion(result.V, result.F, result.UV);
-            std::string mj = metrics_json(metrics, result.num_vertices(), result.num_faces(), ms);
-
-            res.set_header("X-Metrics", mj);
-            // CORS: handled globally
-            res.set_header("Access-Control-Expose-Headers", "X-Metrics");
-            res.set_content(std::string(output.begin(), output.end()), "model/gltf-binary");
-
-        } catch (const std::exception& e) {
-            res.status = 500;
-            res.set_content(std::string("{\"error\":\"") + e.what() + "\"}", "application/json");
-        }
-    });
-
-    // --- STEP tessellation (delegates to occ_tessellate_cli) ---
-    svr.Post("/api/tessellate/step", [&occ_cli](const httplib::Request& req, httplib::Response& res) {
-        if (occ_cli.empty()) {
-            res.status = 501;
-            res.set_content("{\"error\":\"OCC CLI not configured. Use --occ-cli flag.\"}", "application/json");
-            return;
-        }
-
-        try {
-            // Write STEP to temp file
-            std::string tmp_step = "temp_input.step";
-            std::string tmp_glb = "temp_output.glb";
-            {
-                std::ofstream f(tmp_step, std::ios::binary);
-                f.write(req.body.data(), req.body.size());
-            }
-
-            // Call OCC CLI
-            std::string cmd = occ_cli + " " + tmp_step + " " + tmp_glb + " --deflection 1.0";
-            int ret = std::system(cmd.c_str());
-            std::remove(tmp_step.c_str());
-
-            if (ret != 0) {
-                std::remove(tmp_glb.c_str());
-                res.status = 500;
-                res.set_content("{\"error\":\"OCC tessellation failed\"}", "application/json");
-                return;
-            }
-
-            // Read result
-            std::ifstream f(tmp_glb, std::ios::binary | std::ios::ate);
-            size_t sz = f.tellg();
-            f.seekg(0);
-            std::string data(sz, '\0');
-            f.read(data.data(), sz);
-            f.close();
-            std::remove(tmp_glb.c_str());
-
-            // CORS: handled globally
-            res.set_content(data, "model/gltf-binary");
-
-        } catch (const std::exception& e) {
-            res.status = 500;
-            res.set_content(std::string("{\"error\":\"") + e.what() + "\"}", "application/json");
-        }
-    });
-
-    // --- CORS preflight (global handler covers headers, just return 204) ---
     svr.Options("/api/(.*)", [](const httplib::Request&, httplib::Response& res) {
         res.status = 204;
     });
 
-    // --- Static file serving (web frontend) ---
+    // --- Health ---
+    svr.Get("/api/health", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content("{\"status\":\"ok\"}", "application/json");
+    });
+
+    // --- Broker: run all methods, pick best ---
+    svr.Post("/api/parameterize", [](const httplib::Request& req, httplib::Response& res) {
+        std::string forced_method = req.has_param("method") ? req.get_param_value("method") : "auto";
+        bool view_weighted = req.has_param("viewWeighted") && req.get_param_value("viewWeighted") == "true";
+
+        std::vector<uint8_t> input(req.body.begin(), req.body.end());
+
+        // Determine which methods to run
+        struct MethodDef { std::string name; };
+        std::vector<MethodDef> methods_to_run;
+
+        if (forced_method == "auto") {
+            methods_to_run = {{"heat"}, {"cgal_conformal"}, {"cgal_arap"}, {"cgal_authalic"}};
+        } else {
+            methods_to_run = {{forced_method}};
+        }
+
+        // Run all methods in parallel
+        std::vector<MethodResult> results(methods_to_run.size());
+        std::vector<std::thread> workers;
+
+        for (size_t i = 0; i < methods_to_run.size(); ++i) {
+            workers.emplace_back([&, i]() {
+                const auto& mdef = methods_to_run[i];
+                if (mdef.name == "heat") {
+                    results[i] = run_heat(input, view_weighted);
+                } else if (mdef.name == "cgal_conformal") {
+                    results[i] = run_cgal(input, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal");
+                } else if (mdef.name == "cgal_arap") {
+                    results[i] = run_cgal(input, cgalparam::ParamMethod::ARAP, "cgal_arap");
+                } else if (mdef.name == "cgal_authalic") {
+                    results[i] = run_cgal(input, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic");
+                } else if (mdef.name == "cgal_mvc") {
+                    results[i] = run_cgal(input, cgalparam::ParamMethod::MeanValue, "cgal_mvc");
+                } else {
+                    results[i].method = mdef.name;
+                    results[i].error = "Unknown method";
+                }
+            });
+        }
+        for (auto& w : workers) w.join();
+
+        // Pick best by score
+        int best_idx = -1;
+        double best_score = 1e18;
+        for (size_t i = 0; i < results.size(); ++i) {
+            double s = results[i].score();
+            std::cout << "  [broker] " << results[i].method
+                      << ": " << (results[i].success ? "OK" : "FAIL")
+                      << " score=" << s
+                      << " angle=" << results[i].angle_mean
+                      << " stretch=" << results[i].stretch_mean
+                      << " (" << results[i].elapsed_ms << " ms)" << std::endl;
+            if (s < best_score) { best_score = s; best_idx = static_cast<int>(i); }
+        }
+
+        if (best_idx < 0 || !results[best_idx].success) {
+            // All methods failed
+            std::ostringstream err;
+            err << "{\"error\":\"All methods failed\",\"methods\":[";
+            for (size_t i = 0; i < results.size(); ++i) {
+                if (i > 0) err << ",";
+                err << results[i].to_json();
+            }
+            err << "]}";
+            res.status = 500;
+            res.set_content(err.str(), "application/json");
+            return;
+        }
+
+        auto& best = results[best_idx];
+        std::cout << "  [broker] Winner: " << best.method
+                  << " (score=" << best.score() << ")" << std::endl;
+
+        // Build all-methods JSON
+        std::ostringstream all;
+        all << "[";
+        for (size_t i = 0; i < results.size(); ++i) {
+            if (i > 0) all << ",";
+            all << results[i].to_json();
+        }
+        all << "]";
+
+        res.set_header("X-Method", best.method);
+        res.set_header("X-Metrics", best.to_json());
+        res.set_header("X-All-Methods", all.str());
+        res.set_content(std::string(best.glb.begin(), best.glb.end()), "model/gltf-binary");
+    });
+
+    // --- Individual method endpoints (still available) ---
+    svr.Post("/api/parameterize/heat", [](const httplib::Request& req, httplib::Response& res) {
+        bool vw = req.has_param("viewWeighted") && req.get_param_value("viewWeighted") == "true";
+        std::vector<uint8_t> input(req.body.begin(), req.body.end());
+        auto r = run_heat(input, vw);
+        if (!r.success) { res.status = 500; res.set_content("{\"error\":\"" + r.error + "\"}", "application/json"); return; }
+        res.set_header("X-Metrics", r.to_json());
+        res.set_content(std::string(r.glb.begin(), r.glb.end()), "model/gltf-binary");
+    });
+
+    svr.Post("/api/parameterize/cgal", [](const httplib::Request& req, httplib::Response& res) {
+        std::string ms = req.has_param("method") ? req.get_param_value("method") : "conformal";
+        cgalparam::ParamMethod m = cgalparam::ParamMethod::DiscreteConformal;
+        if (ms == "arap") m = cgalparam::ParamMethod::ARAP;
+        else if (ms == "authalic") m = cgalparam::ParamMethod::DiscreteAuthalic;
+        else if (ms == "mvc") m = cgalparam::ParamMethod::MeanValue;
+        std::vector<uint8_t> input(req.body.begin(), req.body.end());
+        auto r = run_cgal(input, m, "cgal_" + ms);
+        if (!r.success) { res.status = 500; res.set_content("{\"error\":\"" + r.error + "\"}", "application/json"); return; }
+        res.set_header("X-Metrics", r.to_json());
+        res.set_content(std::string(r.glb.begin(), r.glb.end()), "model/gltf-binary");
+    });
+
+    // --- STEP tessellation ---
+    svr.Post("/api/tessellate/step", [&occ_cli](const httplib::Request& req, httplib::Response& res) {
+        if (occ_cli.empty()) {
+            res.status = 501; res.set_content("{\"error\":\"OCC CLI not configured\"}", "application/json"); return;
+        }
+        try {
+            double defl = req.has_param("deflection") ? std::stod(req.get_param_value("deflection")) : 1.0;
+            auto glb = tessellate_step(occ_cli, req.body, defl);
+            res.set_content(std::string(glb.begin(), glb.end()), "model/gltf-binary");
+        } catch (const std::exception& e) {
+            res.status = 500; res.set_content("{\"error\":\"" + std::string(e.what()) + "\"}", "application/json");
+        }
+    });
+
+    // --- Static files ---
     svr.set_mount_point("/", web_root);
 
-    std::cout << "Mesh Parameterization Server" << std::endl;
+    std::cout << "Mesh Parameterization Broker" << std::endl;
     std::cout << "  Port:     " << port << std::endl;
     std::cout << "  Threads:  " << threads << std::endl;
     std::cout << "  Web root: " << web_root << std::endl;
-    std::cout << "  OCC CLI:  " << (occ_cli.empty() ? "(not configured)" : occ_cli) << std::endl;
+    std::cout << "  OCC CLI:  " << (occ_cli.empty() ? "(none)" : occ_cli) << std::endl;
     std::cout << "  Endpoints:" << std::endl;
-    std::cout << "    POST /api/parameterize/heat" << std::endl;
-    std::cout << "    POST /api/parameterize/cgal?method=conformal|arap|authalic|mvc" << std::endl;
+    std::cout << "    POST /api/parameterize          (broker: auto-picks best)" << std::endl;
+    std::cout << "    POST /api/parameterize?method=X  (force: heat|cgal_conformal|cgal_arap|cgal_authalic)" << std::endl;
+    std::cout << "    POST /api/parameterize/heat     (direct)" << std::endl;
+    std::cout << "    POST /api/parameterize/cgal     (direct)" << std::endl;
     std::cout << "    POST /api/tessellate/step" << std::endl;
     std::cout << "    GET  /api/health" << std::endl;
-    std::cout << std::endl;
-    std::cout << "Listening on http://localhost:" << port << std::endl;
+    std::cout << "\nListening on http://localhost:" << port << std::endl;
 
     svr.listen("0.0.0.0", port);
     return 0;

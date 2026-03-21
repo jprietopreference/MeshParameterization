@@ -140,6 +140,25 @@ select:focus, input:focus {
     color: #4ecca3;
 }
 
+/* Comparison table */
+#comparisonTable {
+    width: 100%;
+    font-size: 11px;
+    border-collapse: collapse;
+}
+
+#comparisonTable th {
+    color: #888;
+    text-align: left;
+    padding: 2px 4px;
+    border-bottom: 1px solid #0f3460;
+}
+
+#comparisonTable td {
+    padding: 2px 4px;
+    font-family: 'Consolas', 'Monaco', monospace;
+}
+
 /* Status */
 #statusBar {
     margin-top: auto;
