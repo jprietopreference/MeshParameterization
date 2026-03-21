@@ -108,7 +108,7 @@ if(MESHPARAM_BUILD_WASM)
     set_target_properties(meshparam_wasm PROPERTIES
         OUTPUT_NAME "meshparam"
         SUFFIX ".js"
-        LINK_FLAGS "-sWASM=1 -sALLOW_MEMORY_GROWTH=1 -sMODULARIZE=1 -sEXPORT_NAME=createMeshparamModule -sENVIRONMENT=web,worker --bind -O2"
+        LINK_FLAGS "-sWASM=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=2GB -sSTACK_SIZE=5242880 -sMODULARIZE=1 -sEXPORT_NAME=createMeshparamModule -sENVIRONMENT=web,worker --bind -O2"
     )
 endif()
 

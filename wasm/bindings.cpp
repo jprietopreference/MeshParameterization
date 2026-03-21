@@ -13,11 +13,9 @@ using namespace emscripten;
 static std::string g_metrics_json;
 
 /// Parameterize a glTF/glb buffer and return the result as a glb buffer.
-val parameterize_gltf(val input_array, bool use_poisson_fill) {
+val parameterize_gltf(val input_array, bool use_poisson_fill, bool view_weighted, double vx, double vy, double vz) {
     auto length = input_array["length"].as<unsigned>();
     std::vector<uint8_t> input_data(length);
-    val memory = val::module_property("HEAPU8");
-    // Fast copy from JS
     for (unsigned i = 0; i < length; ++i) {
         input_data[i] = input_array[i].as<uint8_t>();
     }
@@ -27,6 +25,10 @@ val parameterize_gltf(val input_array, bool use_poisson_fill) {
     meshparam::ParamConfig config;
     config.use_poisson_fill = use_poisson_fill;
     config.auto_detect_fill = true;
+    config.view_weighted = view_weighted;
+    if (view_weighted) {
+        config.view_direction = Eigen::Vector3d(vx, vy, vz);
+    }
 
     auto result = meshparam::parameterize(mesh, config);
 

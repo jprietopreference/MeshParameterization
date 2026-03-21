@@ -45,8 +45,9 @@ function createScene() {
     scene = new BABYLON.Scene(engine);
     scene.clearColor = new BABYLON.Color4(0.1, 0.1, 0.12, 1);
 
+    // Camera looks from +Z toward origin (alpha=PI/2, beta=PI/2 = front view)
     const camera = new BABYLON.ArcRotateCamera(
-        'cam', Math.PI / 4, Math.PI / 3, 300, BABYLON.Vector3.Zero(), scene
+        'cam', Math.PI / 2, Math.PI / 2, 300, BABYLON.Vector3.Zero(), scene
     );
     camera.attachControl(canvas, true);
     camera.wheelPrecision = 1;
@@ -119,6 +120,10 @@ async function loadGlbIntoScene(glbBuffer, applyChecker = false) {
             camera.target = center;
             camera.radius = extent * 1.5;
 
+            // Axes gizmo (R=X, G=Y, B=Z) — 20mm for mm meshes, 20% of extent otherwise
+            const gizmoSize = extent > 10 ? 20 : extent * 0.2;
+            new BABYLON.AxesViewer(scene, gizmoSize);
+
             currentMesh = result.meshes.find(m => m.getTotalVertices() > 0) || result.meshes[0];
 
             if (applyChecker && currentMesh && currentMesh.isVerticesDataPresent(BABYLON.VertexBuffer.UVKind)) {
@@ -151,62 +156,62 @@ function applyCheckerboard(mesh) {
     mesh.material = mat;
 }
 
-// --- WASM module loading (Emscripten embind) ---
-async function loadWasmModule(name) {
-    if (state.wasmModules[name]) return state.wasmModules[name];
+// --- Web Worker management ---
+let paramWorker = null;
+let remeshWorker = null;
+let workerIdCounter = 0;
+const workerCallbacks = {};
 
-    const jsUrl = `wasm/${name}.js`;
-    try {
-        const response = await fetch(jsUrl);
-        if (!response.ok) throw new Error(`${name}.js not found`);
-
-        // Emscripten modules export a factory function
-        // We load the script and call the factory
-        const script = document.createElement('script');
-        script.src = jsUrl;
-        await new Promise((resolve, reject) => {
-            script.onload = resolve;
-            script.onerror = reject;
-            document.head.appendChild(script);
-        });
-
-        // Emscripten generates a global factory with the module name
-        const factoryName = name === 'meshparam' ? 'createMeshparamModule'
-                          : name === 'cgalparam' ? 'createCgalparamModule'
-                          : name === 'occ_tessellate' ? 'createOccModule'
-                          : name === 'gmsh_remesh' ? 'createGmshModule'
-                          : null;
-
-        if (!factoryName || !window[factoryName]) {
-            throw new Error(`Factory ${factoryName} not found`);
-        }
-
-        const mod = await window[factoryName]();
-        state.wasmModules[name] = mod;
-        return mod;
-    } catch (e) {
-        console.warn(`WASM module ${name} not available: ${e.message}`);
-        return null;
+function getParamWorker() {
+    if (!paramWorker) {
+        paramWorker = new Worker('/worker-param.js');
+        paramWorker.onmessage = (e) => {
+            const cb = workerCallbacks[e.data.id];
+            if (cb) { delete workerCallbacks[e.data.id]; cb(e.data); }
+        };
     }
+    return paramWorker;
 }
 
-// --- Parameterization ---
+function getRemeshWorker() {
+    if (!remeshWorker) {
+        remeshWorker = new Worker('/worker-remesh.js');
+        remeshWorker.onmessage = (e) => {
+            const cb = workerCallbacks[e.data.id];
+            if (cb) { delete workerCallbacks[e.data.id]; cb(e.data); }
+        };
+    }
+    return remeshWorker;
+}
+
+function callWorker(worker, action, data) {
+    return new Promise((resolve, reject) => {
+        const id = ++workerIdCounter;
+        workerCallbacks[id] = (result) => {
+            if (result.ok) resolve(result);
+            else reject(new Error(result.error));
+        };
+        // Transfer the GLB buffer to avoid copying
+        const glbCopy = data.glb.slice(0); // copy so we can transfer
+        worker.postMessage({ id, action, data: { ...data, glb: glbCopy } }, [glbCopy]);
+    });
+}
+
+// --- Parameterization (via Web Worker) ---
 async function parameterize(glbBuffer, method) {
     const isHeat = method === 'heat';
-    const moduleName = isHeat ? 'meshparam' : 'cgalparam';
+    const worker = getParamWorker();
 
-    const mod = await loadWasmModule(moduleName);
-    if (!mod) {
-        throw new Error(`${moduleName} WASM module not built yet. Build with Emscripten.`);
-    }
-
-    const input = new Uint8Array(glbBuffer);
     const t0 = performance.now();
 
-    let resultArray;
+    let result;
     if (isHeat) {
-        // embind: mod.parameterizeGltf(Uint8Array, usePoissonFill)
-        resultArray = mod.parameterizeGltf(input, false);
+        const viewWeighted = $('viewWeighted')?.checked || false;
+        result = await callWorker(worker, 'parameterize_heat', {
+            glb: glbBuffer,
+            viewWeighted,
+            viewDir: [0, 0, 1],
+        });
     } else {
         const methodMap = {
             'cgal_conformal': 'conformal',
@@ -214,8 +219,10 @@ async function parameterize(glbBuffer, method) {
             'cgal_authalic': 'authalic',
             'cgal_mvc': 'mvc',
         };
-        const cgalMethod = methodMap[method] || 'conformal';
-        resultArray = mod.parameterizeGltf(input, cgalMethod);
+        result = await callWorker(worker, 'parameterize_cgal', {
+            glb: glbBuffer,
+            method: methodMap[method] || 'conformal',
+        });
     }
 
     const elapsed = performance.now() - t0;
@@ -223,9 +230,8 @@ async function parameterize(glbBuffer, method) {
 
     // Read metrics
     try {
-        const metricsStr = mod.getMetrics();
-        if (metricsStr) {
-            const m = JSON.parse(metricsStr);
+        if (result.metrics) {
+            const m = JSON.parse(result.metrics);
             if (m.angle_mean != null) setMetric('metAngle', m.angle_mean.toFixed(2) + '\u00b0');
             if (m.angle_max != null) setMetric('metAngleMax', m.angle_max.toFixed(2) + '\u00b0');
             if (m.area_mean != null) setMetric('metArea', m.area_mean.toFixed(3));
@@ -236,10 +242,7 @@ async function parameterize(glbBuffer, method) {
         console.warn('Could not read metrics:', e);
     }
 
-    // Convert embind Uint8Array to ArrayBuffer
-    const output = new Uint8Array(resultArray.length);
-    for (let i = 0; i < resultArray.length; i++) output[i] = resultArray[i];
-    return output.buffer;
+    return result.glb;
 }
 
 // --- File input handler ---
@@ -328,35 +331,24 @@ remeshBtn.addEventListener('click', async () => {
     if (!state.inputGlb) return;
 
     remeshBtn.disabled = true;
-    setStatus('Loading Gmsh WASM (~5 MB)...', 'working');
+    setStatus('Remeshing (isotropic, via Web Worker)...', 'working');
 
     try {
-        const mod = await loadWasmModule('gmsh_remesh');
-        if (!mod) throw new Error('Gmsh WASM module not available.');
-
-        setStatus('Remeshing (isotropic)...', 'working');
-        const input = new Uint8Array(state.inputGlb);
+        const worker = getRemeshWorker();
         const maxTris = parseInt($('targetTris').value) || 5000;
 
         const t0 = performance.now();
-        const resultArray = mod.remeshGlb(input, maxTris);
+        const result = await callWorker(worker, 'remesh', {
+            glb: state.inputGlb,
+            maxTriangles: maxTris,
+        });
         const elapsed = performance.now() - t0;
 
-        if (!resultArray || resultArray.length === 0) {
-            const m = mod.getMetrics();
-            throw new Error('Remeshing failed: ' + m);
-        }
-
-        // Convert embind result to ArrayBuffer
-        const output = new Uint8Array(resultArray.length);
-        for (let i = 0; i < resultArray.length; i++) output[i] = resultArray[i];
-        state.remeshedGlb = output.buffer;
-
+        state.remeshedGlb = result.glb;
         setMetric('metRemeshTime', `${elapsed.toFixed(0)} ms`);
 
-        // Read remesh metrics
         try {
-            const m = JSON.parse(mod.getMetrics());
+            const m = JSON.parse(result.metrics);
             setMetric('metVerts', m.vertices?.toLocaleString() || '-');
             setMetric('metTris', m.faces?.toLocaleString() || '-');
             remeshInfo.textContent = `${m.input_faces} → ${m.faces} tris in ${elapsed.toFixed(0)}ms`;
@@ -437,7 +429,7 @@ exportBtn.addEventListener('click', () => {
 (async function init() {
     setStatus('Checking WASM modules...', 'working');
 
-    const modules = ['meshparam', 'cgalparam', 'occ_tessellate', 'gmsh_remesh'];
+    const modules = ['meshparam', 'cgalparam', 'gmsh_remesh'];
     const available = [];
 
     for (const name of modules) {

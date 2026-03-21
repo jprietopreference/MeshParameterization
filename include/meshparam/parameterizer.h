@@ -14,6 +14,15 @@ struct ParamConfig {
     /// Whether to auto-detect if Poisson fill is needed.
     /// If true, checks mesh boundary; if false, uses use_poisson_fill flag.
     bool auto_detect_fill = true;
+
+    /// View-weighted parameterization: faces aligned with the preferred
+    /// direction get more UV space (less distortion). Disabled by default.
+    bool view_weighted = false;
+
+    /// Preferred viewing direction (unit vector). Faces whose normals
+    /// align with this direction are given higher importance in the MDS
+    /// embedding. Default: +Z (0, 0, 1).
+    Eigen::Vector3d view_direction = Eigen::Vector3d(0, 0, 1);
 };
 
 /// Main entry point: parameterize a mesh following the full paper pipeline.

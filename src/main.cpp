@@ -9,7 +9,8 @@ void print_usage(const char* prog) {
     std::cerr << "Parameterizes a mesh using heat-based geodesics and MDS." << std::endl;
     std::cerr << std::endl;
     std::cerr << "Options:" << std::endl;
-    std::cerr << "  --no-fill   Disable Poisson surface fill (for meshes without holes)" << std::endl;
+    std::cerr << "  --no-fill        Disable Poisson surface fill" << std::endl;
+    std::cerr << "  --view-weighted  Weight UV quality toward +Z facing faces" << std::endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -27,6 +28,9 @@ int main(int argc, char* argv[]) {
         if (arg == "--no-fill") {
             config.use_poisson_fill = false;
             config.auto_detect_fill = false;
+        }
+        if (arg == "--view-weighted") {
+            config.view_weighted = true;
         }
     }
 

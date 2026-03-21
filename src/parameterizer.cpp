@@ -49,8 +49,16 @@ TriMesh parameterize(const TriMesh& mesh, const ParamConfig& config) {
     auto G = compute_geodesic_matrix(solver);
 
     // Steps 8-10: MDS → UV coordinates
-    std::cout << "[meshparam] Running MDS parameterization..." << std::endl;
-    Eigen::MatrixXd UV = classical_mds(G);
+    Eigen::MatrixXd UV;
+    if (config.view_weighted) {
+        std::cout << "[meshparam] Running view-weighted MDS (dir=["
+                  << config.view_direction.transpose() << "])..." << std::endl;
+        auto W = compute_view_weights(*V_ptr, *F_ptr, config.view_direction);
+        UV = weighted_mds(G, W);
+    } else {
+        std::cout << "[meshparam] Running MDS parameterization..." << std::endl;
+        UV = classical_mds(G);
+    }
 
     // If we used Poisson fill, trim back to original vertices
     Eigen::MatrixXd G_orig = G;
