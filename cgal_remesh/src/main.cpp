@@ -11,6 +11,7 @@
 #include <CGAL/Surface_mesh.h>
 #include <CGAL/Polygon_mesh_processing/remesh.h>
 #include <CGAL/Polygon_mesh_processing/border.h>
+#include <CGAL/Polygon_mesh_processing/detect_features.h>
 
 #include <iostream>
 #include <vector>
@@ -177,9 +178,19 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Remeshing (edge=" << target_edge << ", iters=" << iterations << ")..." << std::endl;
 
-    // Isotropic remeshing
+    // Detect and constrain sharp edges (dihedral angle > 60 degrees)
+    typedef boost::property_map<Mesh, CGAL::edge_is_feature_t>::type EIFMap;
+    EIFMap eif = get(CGAL::edge_is_feature, mesh);
+    PMP::detect_sharp_edges(mesh, 60.0, eif);
+    int n_sharp = 0;
+    for (auto e : mesh.edges()) if (get(eif, e)) n_sharp++;
+    std::cout << "Sharp edges: " << n_sharp << std::endl;
+
+    // Isotropic remeshing — protect sharp features to preserve shape
     PMP::isotropic_remeshing(mesh.faces(), target_edge, mesh,
-        CGAL::parameters::number_of_iterations(iterations));
+        CGAL::parameters::number_of_iterations(iterations)
+        .protect_constraints(true)
+        .edge_is_constrained_map(eif));
 
     // Extract result
     TriMesh out;
