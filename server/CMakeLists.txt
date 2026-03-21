@@ -7,6 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # OpenMP for intra-request parallelism
 find_package(OpenMP)
 
+# Draco for mesh compression (optional, from vcpkg)
+find_package(draco CONFIG QUIET)
+
 # Dependencies via FetchContent (reuse from parent)
 include(FetchContent)
 
@@ -153,6 +156,12 @@ target_include_directories(meshparam_server PRIVATE
 )
 
 target_link_libraries(meshparam_server PRIVATE meshparam_lib cgalparam_lib)
+
+if(draco_FOUND)
+    target_link_libraries(meshparam_server PRIVATE draco::draco)
+    target_compile_definitions(meshparam_server PRIVATE HAS_DRACO=1)
+    message(STATUS "Draco compression enabled")
+endif()
 
 if(MSVC)
     target_compile_definitions(meshparam_server PRIVATE _USE_MATH_DEFINES NOMINMAX)

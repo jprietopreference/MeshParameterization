@@ -6,6 +6,17 @@
 import * as BABYLON from '@babylonjs/core';
 import '@babylonjs/loaders/glTF';
 
+// Configure Draco decoder for KHR_draco_mesh_compression
+if (BABYLON.DracoCompression) {
+    BABYLON.DracoCompression.Configuration = {
+        decoder: {
+            wasmUrl: "https://cdn.babylonjs.com/draco_wasm_wrapper_gltf.js",
+            wasmBinaryUrl: "https://cdn.babylonjs.com/draco_decoder_gltf.wasm",
+            fallbackUrl: "https://cdn.babylonjs.com/draco_decoder_gltf.js",
+        }
+    };
+}
+
 const API = 'http://localhost:8080';
 
 // --- State ---

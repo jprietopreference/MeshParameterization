@@ -455,6 +455,137 @@ std::vector<uint8_t> tessellate_step(const std::string& occ_cli, const std::stri
 // Main
 // ============================================================
 // ============================================================
+// Draco compression (optional, compile with -DHAS_DRACO=1)
+// ============================================================
+#ifdef HAS_DRACO
+#include <draco/compression/encode.h>
+#include <draco/mesh/mesh.h>
+#include <draco/core/encoder_buffer.h>
+
+std::vector<uint8_t> draco_compress_glb(const std::vector<uint8_t>& glb_data) {
+    auto mesh = meshparam::load_gltf_from_memory(glb_data);
+    int nv = mesh.num_vertices(), nf = mesh.num_faces();
+    if (nv == 0) return glb_data;
+
+    // Build Draco mesh
+    draco::Mesh draco_mesh;
+    draco_mesh.SetNumFaces(nf);
+
+    // Add position attribute
+    draco::GeometryAttribute pos_att;
+    pos_att.Init(draco::GeometryAttribute::POSITION, nullptr, 3, draco::DT_FLOAT32, false, sizeof(float) * 3, 0);
+    int pos_att_id = draco_mesh.AddAttribute(pos_att, true, nv);
+    for (int i = 0; i < nv; ++i) {
+        float v[3] = {(float)mesh.V(i,0), (float)mesh.V(i,1), (float)mesh.V(i,2)};
+        draco_mesh.attribute(pos_att_id)->SetAttributeValue(draco::AttributeValueIndex(i), v);
+    }
+
+    // Add normal attribute if available
+    int nrm_att_id = -1;
+    if (mesh.has_normals()) {
+        draco::GeometryAttribute nrm_att;
+        nrm_att.Init(draco::GeometryAttribute::NORMAL, nullptr, 3, draco::DT_FLOAT32, false, sizeof(float) * 3, 0);
+        nrm_att_id = draco_mesh.AddAttribute(nrm_att, true, nv);
+        for (int i = 0; i < nv; ++i) {
+            float n[3] = {(float)mesh.N(i,0), (float)mesh.N(i,1), (float)mesh.N(i,2)};
+            draco_mesh.attribute(nrm_att_id)->SetAttributeValue(draco::AttributeValueIndex(i), n);
+        }
+    }
+
+    // Add UV attribute if available
+    int uv_att_id = -1;
+    if (mesh.has_uvs()) {
+        draco::GeometryAttribute uv_att;
+        uv_att.Init(draco::GeometryAttribute::TEX_COORD, nullptr, 2, draco::DT_FLOAT32, false, sizeof(float) * 2, 0);
+        uv_att_id = draco_mesh.AddAttribute(uv_att, true, nv);
+        for (int i = 0; i < nv; ++i) {
+            float uv[2] = {(float)mesh.UV(i,0), (float)mesh.UV(i,1)};
+            draco_mesh.attribute(uv_att_id)->SetAttributeValue(draco::AttributeValueIndex(i), uv);
+        }
+    }
+
+    // Set faces
+    for (int i = 0; i < nf; ++i) {
+        draco::Mesh::Face face;
+        face[0] = draco::PointIndex(mesh.F(i,0));
+        face[1] = draco::PointIndex(mesh.F(i,1));
+        face[2] = draco::PointIndex(mesh.F(i,2));
+        draco_mesh.SetFace(draco::FaceIndex(i), face);
+    }
+
+    // Encode
+    draco::Encoder encoder;
+    encoder.SetSpeedOptions(5, 5); // balanced speed/compression
+    encoder.SetAttributeQuantization(draco::GeometryAttribute::POSITION, 14);
+    encoder.SetAttributeQuantization(draco::GeometryAttribute::NORMAL, 10);
+    encoder.SetAttributeQuantization(draco::GeometryAttribute::TEX_COORD, 12);
+
+    draco::EncoderBuffer buffer;
+    auto status = encoder.EncodeMeshToBuffer(draco_mesh, &buffer);
+    if (!status.ok()) {
+        std::cerr << "[draco] Encoding failed: " << status.error_msg_string() << std::endl;
+        return glb_data; // fallback to uncompressed
+    }
+
+    size_t orig_size = glb_data.size();
+    size_t draco_size = buffer.size();
+    std::cout << "[draco] Compressed: " << orig_size << " -> " << draco_size
+              << " bytes (" << (100 - draco_size * 100 / orig_size) << "% reduction)" << std::endl;
+
+    // Build GLB with KHR_draco_mesh_compression
+    // The Draco buffer replaces the original mesh data
+    std::string json_str;
+    {
+        std::ostringstream js;
+        js << "{\"asset\":{\"version\":\"2.0\",\"generator\":\"meshparam+draco\"},"
+           << "\"extensionsUsed\":[\"KHR_draco_mesh_compression\"],"
+           << "\"extensionsRequired\":[\"KHR_draco_mesh_compression\"],"
+           << "\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+           << "\"meshes\":[{\"primitives\":[{"
+           << "\"attributes\":{\"POSITION\":0";
+        if (nrm_att_id >= 0) js << ",\"NORMAL\":1";
+        if (uv_att_id >= 0) js << ",\"TEXCOORD_0\":" << (nrm_att_id >= 0 ? 2 : 1);
+        js << "},\"mode\":4,"
+           << "\"extensions\":{\"KHR_draco_mesh_compression\":{"
+           << "\"bufferView\":0,\"attributes\":{\"POSITION\":" << pos_att_id;
+        if (nrm_att_id >= 0) js << ",\"NORMAL\":" << nrm_att_id;
+        if (uv_att_id >= 0) js << ",\"TEXCOORD_0\":" << uv_att_id;
+        js << "}}}}]}],"
+           << "\"accessors\":[{\"componentType\":5126,\"count\":" << nv << ",\"type\":\"VEC3\","
+           << "\"min\":[" << mesh.V.col(0).minCoeff() << "," << mesh.V.col(1).minCoeff() << "," << mesh.V.col(2).minCoeff() << "],"
+           << "\"max\":[" << mesh.V.col(0).maxCoeff() << "," << mesh.V.col(1).maxCoeff() << "," << mesh.V.col(2).maxCoeff() << "]}";
+        if (nrm_att_id >= 0) js << ",{\"componentType\":5126,\"count\":" << nv << ",\"type\":\"VEC3\"}";
+        if (uv_att_id >= 0) js << ",{\"componentType\":5126,\"count\":" << nv << ",\"type\":\"VEC2\"}";
+        js << "],\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":" << draco_size << "}],"
+           << "\"buffers\":[{\"byteLength\":" << draco_size << "}]}";
+        json_str = js.str();
+    }
+    while (json_str.size() % 4) json_str += ' ';
+
+    size_t buf_padded = draco_size;
+    while (buf_padded % 4) buf_padded++;
+
+    uint32_t total = 12 + 8 + json_str.size() + 8 + buf_padded;
+    std::vector<uint8_t> result(total, 0);
+    uint8_t* w = result.data();
+
+    memcpy(w, "glTF", 4); w += 4;
+    uint32_t ver = 2; memcpy(w, &ver, 4); w += 4;
+    memcpy(w, &total, 4); w += 4;
+
+    uint32_t jl = json_str.size(); memcpy(w, &jl, 4); w += 4;
+    uint32_t jt = 0x4E4F534A; memcpy(w, &jt, 4); w += 4;
+    memcpy(w, json_str.data(), jl); w += jl;
+
+    uint32_t bl = buf_padded; memcpy(w, &bl, 4); w += 4;
+    uint32_t bt = 0x004E4942; memcpy(w, &bt, 4); w += 4;
+    memcpy(w, buffer.data(), draco_size);
+
+    return result;
+}
+#endif
+
+// ============================================================
 // Session store: keeps all method results for client picking
 // ============================================================
 struct Session {
@@ -702,6 +833,16 @@ int main(int argc, char* argv[]) {
             all << results[i].to_json();
         }
         all << "]";
+
+        // Optionally Draco-compress successful results
+#ifdef HAS_DRACO
+        for (auto& r : results) {
+            if (r.success && !r.glb.empty()) {
+                r.glb = draco_compress_glb(r.glb);
+            }
+        }
+        if (!best.glb.empty()) best.glb = results[best_idx].glb; // update best ref
+#endif
 
         // Store all results in a session for client picking
         cleanup_sessions();
