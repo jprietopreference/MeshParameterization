@@ -105,11 +105,16 @@ void heal_mesh(std::vector<uint8_t>& glb_data, bool force = false) {
 
     for (int i = 0; i < m; ++i) {
         int i0 = mesh.F(i, 0), i1 = mesh.F(i, 1), i2 = mesh.F(i, 2);
+        // Only remove triangles with duplicate vertex indices.
+        // Zero-area collinear triangles are kept — they're topologically needed
+        // to maintain the surface closure (removing them creates holes → genus change).
         if (i0 == i1 || i1 == i2 || i0 == i2) { keep[i] = false; removed++; continue; }
-        Eigen::Vector3d e1 = mesh.V.row(i1) - mesh.V.row(i0);
-        Eigen::Vector3d e2 = mesh.V.row(i2) - mesh.V.row(i0);
-        double area = e1.cross(e2).norm() * 0.5;
-        if (area < min_area) { keep[i] = false; removed++; }
+        if (force) {
+            Eigen::Vector3d e1 = mesh.V.row(i1) - mesh.V.row(i0);
+            Eigen::Vector3d e2 = mesh.V.row(i2) - mesh.V.row(i0);
+            double area = e1.cross(e2).norm() * 0.5;
+            if (area < min_area) { keep[i] = false; removed++; }
+        }
     }
 
     if (removed == 0) return;
@@ -441,6 +446,10 @@ int main(int argc, char* argv[]) {
         // We keep the healed split mesh to re-apply normals to the output.
         std::vector<uint8_t> input_for_param = weld_vertices(input);
 
+        // Heal again after welding — welding can create new degenerate triangles
+        // when two split vertices at the same position get merged
+        heal_mesh(input_for_param, force_heal);
+
         // Determine which methods to run
         struct MethodDef { std::string name; };
         std::vector<MethodDef> methods_to_run;
@@ -463,13 +472,7 @@ int main(int argc, char* argv[]) {
                 } else if (mdef.name == "cgal_conformal") {
                     results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal", view_weighted, input_original);
                 } else if (mdef.name == "cgal_arap") {
-                    // ARAP: try welded first, fall back to healed split-vertex mesh
-                    // (welding can change topology causing ARAP to diverge)
                     results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::ARAP, "cgal_arap", view_weighted, input_original);
-                    if (!results[i].success) {
-                        std::cout << "  [broker] cgal_arap failed on welded, retrying on split-vertex mesh" << std::endl;
-                        results[i] = run_cgal(input, cgalparam::ParamMethod::ARAP, "cgal_arap", false, {});
-                    }
                 } else if (mdef.name == "cgal_authalic") {
                     results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic", view_weighted, input_original);
                 } else if (mdef.name == "cgal_mvc") {
