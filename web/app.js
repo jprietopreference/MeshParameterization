@@ -276,19 +276,21 @@ async function parameterize(glbBuffer, method) {
     const useServer = hasServer && estimatedMs > WASM_TIME_LIMIT;
 
     const backend = useServer ? 'server' : 'WASM';
+    const isHeat = method === 'heat';
+    const methodLabel = isHeat ? 'Heat Geodesic' : method.replace('cgal_', 'CGAL ').replace(/^\w/, c => c.toUpperCase());
     console.log(`[param] ${method} on ~${roughVertCount} verts, est ${estimatedMs.toFixed(0)}ms WASM → using ${backend}`);
 
     const t0 = performance.now();
     let resultGlb, metricsStr;
 
     if (useServer) {
-        setStatus(`Running ${method} on server...`, 'working');
+        setStatus(`${methodLabel} — server-side (~${roughVertCount} verts, est ${(estimatedMs/1000).toFixed(1)}s in WASM)`, 'working');
         const result = await parameterizeViaServer(glbBuffer, method);
         resultGlb = result.glb;
         metricsStr = result.metrics;
     } else {
+        setStatus(`${methodLabel} — client-side WASM (~${roughVertCount} verts)`, 'working');
         const worker = getParamWorker();
-        const isHeat = method === 'heat';
 
         let result;
         if (isHeat) {
@@ -314,6 +316,7 @@ async function parameterize(glbBuffer, method) {
 
     const elapsed = performance.now() - t0;
     setMetric('metParamTime', `${elapsed.toFixed(0)} ms (${backend})`);
+    setStatus(`${methodLabel} complete — ${backend}, ${elapsed.toFixed(0)} ms`, '');
 
     // Read metrics
     try {
@@ -348,13 +351,38 @@ fileInput.addEventListener('change', async (e) => {
 
         if (ext === 'step' || ext === 'stp') {
             fileInfo.textContent = `${file.name} (${(file.size / 1024).toFixed(1)} KB) - STEP`;
-            setStatus('Loading OCCT WASM (~7 MB on first load)...', 'working');
+            setStatus('STEP → GLB — loading OCCT WASM (~7 MB)...', 'working');
             try {
                 const t0 = performance.now();
                 state.inputGlb = await stepToGlb(buffer, 1.0);
-                const elapsed = performance.now() - t0;
-                setMetric('metStepTime', `${elapsed.toFixed(0)} ms`);
+                const stepElapsed = performance.now() - t0;
+                setMetric('metStepTime', `${stepElapsed.toFixed(0)} ms`);
                 fileInfo.textContent = `${file.name} (${(file.size / 1024).toFixed(1)} KB) - STEP → GLB`;
+
+                // Auto-remesh to heal degenerate OCC triangles
+                if ($('autoRemesh')?.checked) {
+                    setStatus('Auto-remesh — healing degenerate triangles (Gmsh WASM)...', 'working');
+                    try {
+                        const worker = getRemeshWorker();
+                        const maxTris = parseInt($('targetTris')?.value) || 5000;
+                        const t1 = performance.now();
+                        const remeshResult = await callWorker(worker, 'remesh', {
+                            glb: state.inputGlb,
+                            maxTriangles: maxTris,
+                        }, 30000); // 30s timeout for auto-remesh
+                        const remeshElapsed = performance.now() - t1;
+                        state.remeshedGlb = remeshResult.glb;
+                        setMetric('metRemeshTime', `${remeshElapsed.toFixed(0)} ms`);
+                        try {
+                            const m = JSON.parse(remeshResult.metrics);
+                            remeshInfo.textContent = `Auto: ${m.input_faces} → ${m.faces} tris`;
+                        } catch (e) { /* ignore */ }
+                        fileInfo.textContent = `${file.name} - STEP → GLB → remeshed`;
+                    } catch (remeshErr) {
+                        console.warn('Auto-remesh skipped:', remeshErr.message);
+                        remeshInfo.textContent = 'Auto-remesh skipped (use manual)';
+                    }
+                }
             } catch (err) {
                 setStatus(`STEP import error: ${err.message}`, 'error');
                 fileInfo.textContent = `${file.name} - STEP import failed`;
@@ -366,10 +394,10 @@ fileInput.addEventListener('change', async (e) => {
             state.inputGlb = buffer;
         }
 
-        state.remeshedGlb = null;
         state.resultGlb = null;
 
-        await loadGlbIntoScene(state.inputGlb, false);
+        // Display the best available mesh (remeshed if available, otherwise raw)
+        await loadGlbIntoScene(state.remeshedGlb || state.inputGlb, false);
 
         remeshPanel.style.display = 'block';
         paramPanel.style.display = 'block';
@@ -379,7 +407,8 @@ fileInput.addEventListener('change', async (e) => {
         metricsPanel.style.display = 'block';
         exportPanel.style.display = 'none';
 
-        setStatus('File loaded. Choose parameterization method.', '');
+        const loadedMsg = state.remeshedGlb ? 'File loaded + remeshed.' : 'File loaded.';
+        setStatus(`${loadedMsg} Choose parameterization method.`, '');
     } catch (err) {
         setStatus(`Error: ${err.message}`, 'error');
         console.error(err);
@@ -394,8 +423,8 @@ paramBtn.addEventListener('click', async () => {
 
     paramBtn.disabled = true;
     paramInfo.textContent = '';
-    console.log('[click] glb=', glb, 'byteLength=', glb?.byteLength, 'method=', method);
-    setStatus(`Running ${method} parameterization...`, 'working');
+    const methodLabel = methodSelect.options[methodSelect.selectedIndex].text;
+    setStatus(`Preparing ${methodLabel}...`, 'working');
 
     try {
         state.resultGlb = await parameterize(glb, method);
@@ -403,8 +432,8 @@ paramBtn.addEventListener('click', async () => {
 
         viewPanel.style.display = 'block';
         exportPanel.style.display = 'block';
-        setStatus('Parameterization complete.', '');
-        paramInfo.textContent = `Method: ${methodSelect.options[methodSelect.selectedIndex].text}`;
+        // Status already set by parameterize()
+        paramInfo.textContent = methodSelect.options[methodSelect.selectedIndex].text;
     } catch (err) {
         setStatus(`Parameterization error: ${err.message}`, 'error');
         paramInfo.textContent = err.message;
@@ -419,7 +448,7 @@ remeshBtn.addEventListener('click', async () => {
     if (!state.inputGlb) return;
 
     remeshBtn.disabled = true;
-    setStatus('Remeshing (isotropic, via Web Worker)...', 'working');
+    setStatus('Gmsh isotropic remesh — WASM worker...', 'working');
 
     try {
         const worker = getRemeshWorker();
@@ -443,7 +472,7 @@ remeshBtn.addEventListener('click', async () => {
         } catch (e) { /* ignore */ }
 
         await loadGlbIntoScene(state.remeshedGlb, false);
-        setStatus('Remeshing complete. Choose parameterization method.', '');
+        setStatus(`Gmsh remesh complete — ${elapsed.toFixed(0)} ms, WASM`, '');
     } catch (err) {
         setStatus(`Remesh error: ${err.message}`, 'error');
         remeshInfo.textContent = err.message;

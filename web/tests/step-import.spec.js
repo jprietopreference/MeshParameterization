@@ -32,11 +32,14 @@ test('STEP file import and tessellation', async ({ page }) => {
     // Wait for OCC WASM load + tessellation (may take a while on first load)
     await page.waitForFunction(
         () => {
-            const status = document.getElementById('statusBar')?.textContent || '';
-            return status.includes('loaded') || status.includes('error') || status.includes('Choose');
+            const s = document.getElementById('statusBar')?.textContent || '';
+            return s.includes('loaded') || s.includes('error') || s.includes('Choose') ||
+                   s.includes('complete') || s.includes('remeshed');
         },
         { timeout: 150000 }
     );
+    // Wait a bit more for auto-remesh to finish
+    await page.waitForTimeout(15000);
 
     const status = await page.textContent('#statusBar');
     console.log('Status:', status);

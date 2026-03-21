@@ -16,6 +16,11 @@
                 <h2>1. Input</h2>
                 <label class="file-btn" for="fileInput">Choose File (.glb / .step)</label>
                 <input type="file" id="fileInput" accept=".glb,.glTF,.step,.stp,.STEP,.STP" hidden>
+                <div class="row">
+                    <label>
+                        <input type="checkbox" id="autoRemesh" checked> Auto-remesh STEP imports
+                    </label>
+                </div>
                 <div id="fileInfo" class="info-text">No file loaded</div>
             </section>
 
