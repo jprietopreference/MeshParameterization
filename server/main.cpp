@@ -196,6 +196,40 @@ HealStats heal_mesh(std::vector<uint8_t>& glb_data, bool force = false) {
 }
 
 // ============================================================
+// CGAL isotropic remeshing via external CLI
+// ============================================================
+std::vector<uint8_t> remesh_isotropic(const std::string& remesh_cli, const std::vector<uint8_t>& glb_data) {
+    auto tid = std::this_thread::get_id();
+    std::ostringstream ss;
+    const char* tmp_dir = std::getenv("TEMP");
+    if (!tmp_dir) tmp_dir = std::getenv("TMP");
+    if (!tmp_dir) tmp_dir = ".";
+    ss << tmp_dir << "/meshparam_remesh_" << tid;
+    std::string tmp_in = ss.str() + "_in.glb";
+    std::string tmp_out = ss.str() + "_out.glb";
+
+    { std::ofstream f(tmp_in, std::ios::binary);
+      f.write(reinterpret_cast<const char*>(glb_data.data()), glb_data.size()); }
+
+    std::string cmd = remesh_cli + " \"" + tmp_in + "\" \"" + tmp_out + "\"";
+    int ret = std::system(cmd.c_str());
+    std::remove(tmp_in.c_str());
+
+    if (ret != 0) {
+        std::remove(tmp_out.c_str());
+        throw std::runtime_error("CGAL remeshing failed");
+    }
+
+    std::ifstream f(tmp_out, std::ios::binary | std::ios::ate);
+    size_t sz = f.tellg(); f.seekg(0);
+    std::vector<uint8_t> result(sz);
+    f.read(reinterpret_cast<char*>(result.data()), sz);
+    f.close();
+    std::remove(tmp_out.c_str());
+    return result;
+}
+
+// ============================================================
 // Method result
 // ============================================================
 struct MethodResult {
@@ -426,12 +460,14 @@ int main(int argc, char* argv[]) {
     std::string gmsh_cli = "";
     int threads = 8;
 
+    std::string remesh_cli = "";
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--port" && i + 1 < argc) port = std::stoi(argv[++i]);
         if (arg == "--web-root" && i + 1 < argc) web_root = argv[++i];
         if (arg == "--occ-cli" && i + 1 < argc) occ_cli = argv[++i];
         if (arg == "--gmsh-cli" && i + 1 < argc) gmsh_cli = argv[++i];
+        if (arg == "--remesh-cli" && i + 1 < argc) remesh_cli = argv[++i];
         if (arg == "--threads" && i + 1 < argc) threads = std::stoi(argv[++i]);
     }
 
@@ -457,7 +493,7 @@ int main(int argc, char* argv[]) {
     });
 
     // --- Broker: run all methods, pick best ---
-    svr.Post("/api/parameterize", [](const httplib::Request& req, httplib::Response& res) {
+    svr.Post("/api/parameterize", [&remesh_cli](const httplib::Request& req, httplib::Response& res) {
         std::string forced_method = req.has_param("method") ? req.get_param_value("method") : "auto";
         bool view_weighted = req.has_param("viewWeighted") && req.get_param_value("viewWeighted") == "true";
 
@@ -483,33 +519,63 @@ int main(int argc, char* argv[]) {
         heal_total.perturbed = heal1.perturbed + heal2.perturbed;
         heal_total.forced = force_heal;
 
+        // Optionally create a remeshed version for a parallel path
+        std::vector<uint8_t> input_remeshed;
+        bool has_remesh = !remesh_cli.empty();
+        if (has_remesh && forced_method == "auto") {
+            try {
+                auto t_r0 = std::chrono::high_resolution_clock::now();
+                input_remeshed = remesh_isotropic(remesh_cli, input_for_param);
+                auto t_r1 = std::chrono::high_resolution_clock::now();
+                double rms = std::chrono::duration<double, std::milli>(t_r1 - t_r0).count();
+                std::cout << "[broker] Remeshed in " << rms << " ms" << std::endl;
+            } catch (const std::exception& e) {
+                std::cout << "[broker] Remesh failed: " << e.what() << std::endl;
+                has_remesh = false;
+            }
+        }
+
         // Determine which methods to run
-        struct MethodDef { std::string name; };
+        struct MethodDef { std::string name; bool on_remeshed; };
         std::vector<MethodDef> methods_to_run;
 
         if (forced_method == "auto") {
-            methods_to_run = {{"heat"}, {"cgal_conformal"}, {"cgal_arap"}, {"cgal_authalic"}};
+            // Path A: original healed+welded mesh
+            methods_to_run.push_back({"heat", false});
+            methods_to_run.push_back({"cgal_conformal", false});
+            methods_to_run.push_back({"cgal_arap", false});
+            methods_to_run.push_back({"cgal_authalic", false});
+            // Path B: remeshed (if available)
+            if (has_remesh) {
+                methods_to_run.push_back({"heat", true});
+                methods_to_run.push_back({"cgal_conformal", true});
+                methods_to_run.push_back({"cgal_arap", true});
+                methods_to_run.push_back({"cgal_authalic", true});
+            }
         } else {
-            methods_to_run = {{forced_method}};
+            methods_to_run.push_back({forced_method, false});
         }
 
-        // Run all methods in parallel on the WELDED mesh
+        // Run all methods in parallel
         std::vector<MethodResult> results(methods_to_run.size());
         std::vector<std::thread> workers;
 
         for (size_t i = 0; i < methods_to_run.size(); ++i) {
             workers.emplace_back([&, i]() {
                 const auto& mdef = methods_to_run[i];
+                const auto& mesh_input = mdef.on_remeshed ? input_remeshed : input_for_param;
+                std::string suffix = mdef.on_remeshed ? "_remeshed" : "";
                 if (mdef.name == "heat") {
-                    results[i] = run_heat(input_for_param, view_weighted);
+                    results[i] = run_heat(mesh_input, view_weighted);
+                    results[i].method += suffix;
                 } else if (mdef.name == "cgal_conformal") {
-                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal", view_weighted, input_original);
+                    results[i] = run_cgal(mesh_input, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal" + suffix, view_weighted, mdef.on_remeshed ? std::vector<uint8_t>{} : input_original);
                 } else if (mdef.name == "cgal_arap") {
-                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::ARAP, "cgal_arap", view_weighted, input_original);
+                    results[i] = run_cgal(mesh_input, cgalparam::ParamMethod::ARAP, "cgal_arap" + suffix, view_weighted, mdef.on_remeshed ? std::vector<uint8_t>{} : input_original);
                 } else if (mdef.name == "cgal_authalic") {
-                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic", view_weighted, input_original);
+                    results[i] = run_cgal(mesh_input, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic" + suffix, view_weighted, mdef.on_remeshed ? std::vector<uint8_t>{} : input_original);
                 } else if (mdef.name == "cgal_mvc") {
-                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::MeanValue, "cgal_mvc", view_weighted, input_original);
+                    results[i] = run_cgal(mesh_input, cgalparam::ParamMethod::MeanValue, "cgal_mvc" + suffix, view_weighted, mdef.on_remeshed ? std::vector<uint8_t>{} : input_original);
                 } else {
                     results[i].method = mdef.name;
                     results[i].error = "Unknown method";
@@ -660,6 +726,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  Threads:  " << threads << std::endl;
     std::cout << "  Web root: " << web_root << std::endl;
     std::cout << "  OCC CLI:  " << (occ_cli.empty() ? "(none)" : occ_cli) << std::endl;
+    std::cout << "  Remesh:   " << (remesh_cli.empty() ? "(none)" : remesh_cli) << std::endl;
     std::cout << "  Endpoints:" << std::endl;
     std::cout << "    POST /api/parameterize          (broker: auto-picks best)" << std::endl;
     std::cout << "    POST /api/parameterize?method=X  (force: heat|cgal_conformal|cgal_arap|cgal_authalic)" << std::endl;
