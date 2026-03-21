@@ -256,7 +256,9 @@ MethodResult run_heat(const std::vector<uint8_t>& input_glb, bool view_weighted)
     return r;
 }
 
-MethodResult run_cgal(const std::vector<uint8_t>& input_glb, cgalparam::ParamMethod method, const std::string& method_name) {
+MethodResult run_cgal(const std::vector<uint8_t>& input_glb, cgalparam::ParamMethod method, const std::string& method_name,
+                      bool use_silhouette_seam = false,
+                      const std::vector<uint8_t>& orig_glb_for_seam = {}) {
     MethodResult r;
     r.method = method_name;
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -265,8 +267,14 @@ MethodResult run_cgal(const std::vector<uint8_t>& input_glb, cgalparam::ParamMet
         auto sm = cgalparam::to_cgal_mesh(tri);
 
         if (CGAL::is_closed(sm)) {
-            auto cut = cgalparam::cut_to_disk(sm);
-            sm = cut.cut_mesh;
+            if (use_silhouette_seam && !orig_glb_for_seam.empty()) {
+                auto orig = meshparam::load_gltf_from_memory(orig_glb_for_seam);
+                auto cut = cgalparam::cut_brep_silhouette(sm, orig.V, orig.N, orig.F);
+                sm = cut.cut_mesh;
+            } else {
+                auto cut = cgalparam::cut_to_disk(sm);
+                sm = cut.cut_mesh;
+            }
         }
 
         Eigen::MatrixXd UV = cgalparam::parameterize(sm, method);
@@ -392,12 +400,15 @@ int main(int argc, char* argv[]) {
 
         // Always auto-detect and heal degenerate triangles.
         // The "heal" flag forces healing even for near-degenerate cases (looser threshold).
+        // Save original input (with OCC split-vertex normals) for seam analysis
+        std::vector<uint8_t> input_original = input;
+
         bool force_heal = req.has_param("heal") && req.get_param_value("heal") == "true";
         heal_mesh(input, force_heal);
 
         // Weld split vertices for parameterization (OCC splits at face boundaries
         // for correct normals, but parameterization needs shared connectivity).
-        // We keep the original split mesh to re-apply normals to the output.
+        // We keep the healed split mesh to re-apply normals to the output.
         std::vector<uint8_t> input_for_param = weld_vertices(input);
 
         // Determine which methods to run
@@ -420,13 +431,13 @@ int main(int argc, char* argv[]) {
                 if (mdef.name == "heat") {
                     results[i] = run_heat(input_for_param, view_weighted);
                 } else if (mdef.name == "cgal_conformal") {
-                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal");
+                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal", view_weighted, input_original);
                 } else if (mdef.name == "cgal_arap") {
-                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::ARAP, "cgal_arap");
+                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::ARAP, "cgal_arap", view_weighted, input_original);
                 } else if (mdef.name == "cgal_authalic") {
-                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic");
+                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic", view_weighted, input_original);
                 } else if (mdef.name == "cgal_mvc") {
-                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::MeanValue, "cgal_mvc");
+                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::MeanValue, "cgal_mvc", view_weighted, input_original);
                 } else {
                     results[i].method = mdef.name;
                     results[i].error = "Unknown method";
