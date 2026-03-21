@@ -9,6 +9,7 @@
 
 #include <STEPControl_Reader.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
+#include <BRepLib_ToolTriangulatedShape.hxx>
 #include <BRep_Tool.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Face.hxx>
@@ -17,6 +18,7 @@
 #include <Poly_Triangulation.hxx>
 #include <TopAbs_Orientation.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Dir.hxx>
 #include <gp_Trsf.hxx>
 
 #include <iostream>
@@ -72,27 +74,12 @@ int main(int argc, char* argv[]) {
     mesh.Perform();
     std::cout << "Tessellated (deflection=" << deflection << "mm)." << std::endl;
 
-    // Extract triangulation — shared vertex with welding
+    // Extract triangulation — split vertices per OCC face for correct normals.
+    // Each OCC face gets its own vertices so normals are sharp at face boundaries
+    // and smooth within each face (analytical surface normals from B-Rep).
     std::vector<float> all_verts;
+    std::vector<float> all_normals;
     std::vector<uint32_t> all_tris;
-    std::map<Vec3, uint32_t> vert_map;
-
-    auto get_or_add_vertex = [&](float x, float y, float z) -> uint32_t {
-        // Quantize to 1e-6 for welding
-        Vec3 key{
-            std::round(x * 1e6f) * 1e-6f,
-            std::round(y * 1e6f) * 1e-6f,
-            std::round(z * 1e6f) * 1e-6f
-        };
-        auto it = vert_map.find(key);
-        if (it != vert_map.end()) return it->second;
-        uint32_t idx = static_cast<uint32_t>(all_verts.size() / 3);
-        all_verts.push_back(x);
-        all_verts.push_back(y);
-        all_verts.push_back(z);
-        vert_map[key] = idx;
-        return idx;
-    };
 
     for (TopExp_Explorer exp(shape, TopAbs_FACE); exp.More(); exp.Next()) {
         TopoDS_Face face = TopoDS::Face(exp.Current());
@@ -100,28 +87,46 @@ int main(int argc, char* argv[]) {
         Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
         if (tri.IsNull()) continue;
 
+        // Compute analytical surface normals from the B-Rep face
+        BRepLib_ToolTriangulatedShape::ComputeNormals(face, tri);
+
         gp_Trsf trsf = loc.Transformation();
         int nNodes = tri->NbNodes();
         int nTris = tri->NbTriangles();
         bool reversed = (face.Orientation() == TopAbs_REVERSED);
 
-        // Map local node indices to global vertex indices
-        std::vector<uint32_t> local_to_global(nNodes + 1);
+        // Each face gets its own vertex range
+        uint32_t base = static_cast<uint32_t>(all_verts.size() / 3);
+
         for (int i = 1; i <= nNodes; ++i) {
             gp_Pnt pt = tri->Node(i).Transformed(trsf);
-            float x = static_cast<float>(pt.X() * scale);
-            float y = static_cast<float>(pt.Y() * scale);
-            float z = static_cast<float>(pt.Z() * scale);
-            local_to_global[i] = get_or_add_vertex(x, y, z);
+            all_verts.push_back(static_cast<float>(pt.X() * scale));
+            all_verts.push_back(static_cast<float>(pt.Y() * scale));
+            all_verts.push_back(static_cast<float>(pt.Z() * scale));
+
+            if (tri->HasNormals()) {
+                gp_Dir nrm = tri->Normal(i);
+                // Transform normal by rotation part of location
+                nrm.Transform(trsf);
+                // Flip for reversed faces
+                float sign = reversed ? -1.0f : 1.0f;
+                all_normals.push_back(static_cast<float>(nrm.X()) * sign);
+                all_normals.push_back(static_cast<float>(nrm.Y()) * sign);
+                all_normals.push_back(static_cast<float>(nrm.Z()) * sign);
+            } else {
+                all_normals.push_back(0.0f);
+                all_normals.push_back(0.0f);
+                all_normals.push_back(1.0f);
+            }
         }
 
         for (int i = 1; i <= nTris; ++i) {
             int n1, n2, n3;
             tri->Triangle(i).Get(n1, n2, n3);
             if (reversed) std::swap(n2, n3);
-            all_tris.push_back(local_to_global[n1]);
-            all_tris.push_back(local_to_global[n2]);
-            all_tris.push_back(local_to_global[n3]);
+            all_tris.push_back(base + n1 - 1);
+            all_tris.push_back(base + n2 - 1);
+            all_tris.push_back(base + n3 - 1);
         }
     }
 
@@ -143,6 +148,12 @@ int main(int argc, char* argv[]) {
     buffer_data.resize(pos_size);
     std::memcpy(buffer_data.data(), all_verts.data(), pos_size);
 
+    // Normals
+    size_t nrm_offset = buffer_data.size();
+    size_t nrm_size = nv * 3 * sizeof(float);
+    buffer_data.resize(nrm_offset + nrm_size);
+    std::memcpy(buffer_data.data() + nrm_offset, all_normals.data(), nrm_size);
+
     // Indices
     size_t idx_offset = buffer_data.size();
     size_t idx_size = nf * 3 * sizeof(uint32_t);
@@ -153,11 +164,19 @@ int main(int argc, char* argv[]) {
     buf.data = buffer_data;
     model.buffers.push_back(buf);
 
+    // BV 0: positions
     tinygltf::BufferView pos_bv;
     pos_bv.buffer = 0; pos_bv.byteOffset = 0;
     pos_bv.byteLength = pos_size; pos_bv.target = TINYGLTF_TARGET_ARRAY_BUFFER;
     model.bufferViews.push_back(pos_bv);
 
+    // BV 1: normals
+    tinygltf::BufferView nrm_bv;
+    nrm_bv.buffer = 0; nrm_bv.byteOffset = nrm_offset;
+    nrm_bv.byteLength = nrm_size; nrm_bv.target = TINYGLTF_TARGET_ARRAY_BUFFER;
+    model.bufferViews.push_back(nrm_bv);
+
+    // BV 2: indices
     tinygltf::BufferView idx_bv;
     idx_bv.buffer = 0; idx_bv.byteOffset = idx_offset;
     idx_bv.byteLength = idx_size; idx_bv.target = TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER;
@@ -172,6 +191,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // Accessor 0: positions
     tinygltf::Accessor pos_acc;
     pos_acc.bufferView = 0; pos_acc.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
     pos_acc.count = nv; pos_acc.type = TINYGLTF_TYPE_VEC3;
@@ -179,14 +199,22 @@ int main(int argc, char* argv[]) {
     pos_acc.maxValues = {mx[0], mx[1], mx[2]};
     model.accessors.push_back(pos_acc);
 
+    // Accessor 1: normals
+    tinygltf::Accessor nrm_acc;
+    nrm_acc.bufferView = 1; nrm_acc.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+    nrm_acc.count = nv; nrm_acc.type = TINYGLTF_TYPE_VEC3;
+    model.accessors.push_back(nrm_acc);
+
+    // Accessor 2: indices
     tinygltf::Accessor idx_acc;
-    idx_acc.bufferView = 1; idx_acc.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT;
+    idx_acc.bufferView = 2; idx_acc.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT;
     idx_acc.count = nf * 3; idx_acc.type = TINYGLTF_TYPE_SCALAR;
     model.accessors.push_back(idx_acc);
 
     tinygltf::Primitive prim;
     prim.attributes["POSITION"] = 0;
-    prim.indices = 1;
+    prim.attributes["NORMAL"] = 1;
+    prim.indices = 2;
     prim.mode = TINYGLTF_MODE_TRIANGLES;
 
     tinygltf::Mesh gm;
