@@ -159,6 +159,14 @@ select:focus, input:focus {
     font-family: 'Consolas', 'Monaco', monospace;
 }
 
+#comparisonTable tr[style*="pointer"]:hover {
+    background: #0f3460;
+}
+
+#comparisonTable tbody tr:hover {
+    background: #0f3460;
+}
+
 /* Status */
 #statusBar {
     margin-top: auto;

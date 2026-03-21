@@ -28,6 +28,7 @@
 #include <atomic>
 #include <unordered_map>
 #include <array>
+#include <random>
 
 // ============================================================
 // Vertex welding: merge split vertices (same position) for parameterization
@@ -453,6 +454,34 @@ std::vector<uint8_t> tessellate_step(const std::string& occ_cli, const std::stri
 // ============================================================
 // Main
 // ============================================================
+// ============================================================
+// Session store: keeps all method results for client picking
+// ============================================================
+struct Session {
+    std::vector<MethodResult> results;
+    std::chrono::steady_clock::time_point created;
+};
+
+std::mutex g_sessions_mutex;
+std::unordered_map<std::string, Session> g_sessions;
+
+std::string generate_session_id() {
+    static std::mt19937 rng(std::random_device{}());
+    static const char chars[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+    std::string id(12, ' ');
+    for (auto& c : id) c = chars[rng() % (sizeof(chars) - 1)];
+    return id;
+}
+
+void cleanup_sessions() {
+    auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(g_sessions_mutex);
+    for (auto it = g_sessions.begin(); it != g_sessions.end();) {
+        auto age = std::chrono::duration_cast<std::chrono::minutes>(now - it->second.created).count();
+        if (age > 10) it = g_sessions.erase(it); else ++it;
+    }
+}
+
 int main(int argc, char* argv[]) {
     int port = 8080;
     std::string web_root = "../web";
@@ -480,7 +509,7 @@ int main(int argc, char* argv[]) {
         res.set_header("Access-Control-Allow-Origin", "*");
         res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         res.set_header("Access-Control-Allow-Headers", "Content-Type");
-        res.set_header("Access-Control-Expose-Headers", "X-Metrics, X-Method, X-All-Methods, X-Heal-Info");
+        res.set_header("Access-Control-Expose-Headers", "X-Metrics, X-Method, X-All-Methods, X-Heal-Info, X-Session");
     });
 
     svr.Options("/api/(.*)", [](const httplib::Request&, httplib::Response& res) {
@@ -674,11 +703,45 @@ int main(int argc, char* argv[]) {
         }
         all << "]";
 
+        // Store all results in a session for client picking
+        cleanup_sessions();
+        std::string session_id = generate_session_id();
+        {
+            std::lock_guard<std::mutex> lock(g_sessions_mutex);
+            g_sessions[session_id] = {results, std::chrono::steady_clock::now()};
+        }
+
         res.set_header("X-Method", best.method);
         res.set_header("X-Metrics", best.to_json());
         res.set_header("X-All-Methods", all.str());
         res.set_header("X-Heal-Info", heal_total.to_json());
+        res.set_header("X-Session", session_id);
         res.set_content(std::string(best.glb.begin(), best.glb.end()), "model/gltf-binary");
+    });
+
+    // --- Fetch specific method result from session ---
+    svr.Get("/api/result/:session/:method", [](const httplib::Request& req, httplib::Response& res) {
+        std::string session_id = req.path_params.at("session");
+        std::string method = req.path_params.at("method");
+
+        std::lock_guard<std::mutex> lock(g_sessions_mutex);
+        auto it = g_sessions.find(session_id);
+        if (it == g_sessions.end()) {
+            res.status = 404;
+            res.set_content("{\"error\":\"Session expired\"}", "application/json");
+            return;
+        }
+
+        for (auto& r : it->second.results) {
+            if (r.method == method && r.success) {
+                res.set_header("X-Metrics", r.to_json());
+                res.set_content(std::string(r.glb.begin(), r.glb.end()), "model/gltf-binary");
+                return;
+            }
+        }
+
+        res.status = 404;
+        res.set_content("{\"error\":\"Method not found or failed\"}", "application/json");
     });
 
     // --- Individual method endpoints (still available) ---

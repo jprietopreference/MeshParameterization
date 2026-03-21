@@ -114,6 +114,7 @@ async function apiParameterize(glbBuffer, method, viewWeighted, forceHeal) {
         metrics: r.headers.get('X-Metrics'),
         allMethods: r.headers.get('X-All-Methods'),
         healInfo: r.headers.get('X-Heal-Info'),
+        session: r.headers.get('X-Session'),
     };
 }
 
@@ -189,7 +190,8 @@ $('paramBtn').addEventListener('click', async () => {
             } catch (e) {}
         }
 
-        // Show comparison table
+        // Show comparison table (clickable rows to switch method)
+        const sessionId = result.session;
         if (result.allMethods) {
             try {
                 const all = JSON.parse(result.allMethods);
@@ -201,6 +203,10 @@ $('paramBtn').addEventListener('click', async () => {
                     const winner = m.method === result.method;
                     tr.style.fontWeight = winner ? 'bold' : 'normal';
                     tr.style.color = !m.success ? '#e94560' : winner ? '#4ecca3' : '#ccc';
+                    if (m.success) {
+                        tr.style.cursor = 'pointer';
+                        tr.addEventListener('click', () => loadMethodResult(sessionId, m.method));
+                    }
                     tr.innerHTML = `<td>${m.method}${winner ? ' ★' : ''}</td>` +
                         `<td>${m.success ? m.angle_mean?.toFixed(1) + '°' : 'FAIL'}</td>` +
                         `<td>${m.success ? m.stretch_mean?.toFixed(1) : '-'}</td>` +
@@ -241,6 +247,36 @@ $('paramBtn').addEventListener('click', async () => {
         $('paramBtn').disabled = false;
     }
 });
+
+// --- Load a specific method result from session ---
+async function loadMethodResult(session, methodName) {
+    setStatus(`Loading ${methodName}...`, 'working');
+    try {
+        const r = await fetch(`${API}/api/result/${session}/${encodeURIComponent(methodName)}`);
+        if (!r.ok) throw new Error(`Failed to load ${methodName}`);
+        const glb = await r.arrayBuffer();
+        const metricsStr = r.headers.get('X-Metrics');
+        state.resultGlb = glb;
+        await loadGlb(glb, true);
+
+        if (metricsStr) {
+            try {
+                const m = JSON.parse(metricsStr);
+                setMetric('metMethod', methodName);
+                if (m.angle_mean != null) setMetric('metAngle', m.angle_mean.toFixed(2) + '\u00b0');
+                if (m.angle_max != null) setMetric('metAngleMax', m.angle_max.toFixed(2) + '\u00b0');
+                if (m.area_mean != null) setMetric('metArea', m.area_mean.toFixed(3));
+                if (m.stretch_mean != null) setMetric('metStretch', m.stretch_mean.toFixed(2));
+                if (m.score != null) setMetric('metScore', m.score.toFixed(2));
+            } catch (e) {}
+        }
+
+        if ($('showSeams')?.checked && currentMesh) showSeamLines(currentMesh);
+        setStatus(`Viewing: ${methodName}`, '');
+    } catch (err) {
+        setStatus(`Error: ${err.message}`, 'error');
+    }
+}
 
 // --- Seam visualization ---
 function showSeamLines(mesh) {
