@@ -1,6 +1,8 @@
+#ifndef CGALPARAM_NO_TINYGLTF_IMPL
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
+#endif
 
 #include "cgalparam/gltf_io.h"
 #include <tiny_gltf.h>

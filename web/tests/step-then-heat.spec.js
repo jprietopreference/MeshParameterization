@@ -24,23 +24,31 @@ test('STEP import then heat parameterization', async ({ page }) => {
     let status = await page.textContent('#statusBar');
     console.log('After STEP load:', status);
 
-    // Now run heat parameterization (1500+ verts = slow in WASM, wait up to 2 min)
+    // Now run heat parameterization
     await page.selectOption('#methodSelect', 'heat');
-    await page.click('#paramBtn');
+    const btnDisabled = await page.locator('#paramBtn').isDisabled();
+    console.log('Param button disabled:', btnDisabled);
+    if (!btnDisabled) await page.click('#paramBtn');
+    else { console.log('ERROR: button is disabled!'); }
+
+    // Wait a bit then dump logs
+    await page.waitForTimeout(5000);
+    console.log(`Logs so far (${logs.length}):`);
+    logs.forEach(l => console.log('  ', l));
+
     await page.waitForFunction(
         () => {
             const s = document.getElementById('statusBar')?.textContent || '';
             return s.includes('complete') || s.includes('error');
         },
-        { timeout: 120000 }
+        { timeout: 30000 }
     );
 
     status = await page.textContent('#statusBar');
     console.log('After parameterization:', status);
 
-    console.log('Console:');
-    logs.filter(l => !l.includes('WebGL') && !l.includes('vite') && !l.includes('GPU'))
-        .forEach(l => console.log('  ', l));
+    console.log(`Console (${logs.length} entries):`);
+    logs.forEach(l => console.log('  ', l));
 
     await page.screenshot({ path: 'tests/screenshots/step-then-heat.png' });
     expect(status).not.toContain('error');

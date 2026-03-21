@@ -156,6 +156,71 @@ function applyCheckerboard(mesh) {
     mesh.material = mat;
 }
 
+// --- Server-side API ---
+const SERVER_URL = 'http://localhost:8080';
+let serverAvailable = null; // null = unknown, true/false after check
+
+async function checkServer() {
+    // Re-check each time (server may start/stop between requests)
+    try {
+        console.log('[routing] Checking server at', SERVER_URL);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 2000);
+        const resp = await fetch(`${SERVER_URL}/api/health`, { signal: controller.signal });
+        clearTimeout(timeout);
+        serverAvailable = resp.ok;
+    } catch (e) {
+        serverAvailable = false;
+    }
+    return serverAvailable;
+}
+
+// Estimate compute time in WASM (ms) based on vertex count and method
+function estimateWasmTime(vertexCount, method) {
+    if (method === 'heat') {
+        // O(n^2) geodesic + O(n^3) eigen in WASM
+        // Measured: 272 verts = 47ms, 413 verts = ~500ms, 1537 verts = >120s
+        // Conservative estimate: use n^2.5 to account for eigen scaling
+        return Math.pow(vertexCount, 2.5) * 0.00005;
+    }
+    // CGAL: sparse solvers, roughly O(n)
+    return vertexCount * 0.5;
+}
+
+const WASM_TIME_LIMIT = 5000; // 5 seconds
+
+async function parameterizeViaServer(glbBuffer, method) {
+    const isHeat = method === 'heat';
+    const endpoint = isHeat ? '/api/parameterize/heat' : '/api/parameterize/cgal';
+    const params = new URLSearchParams();
+    if (isHeat) {
+        const viewWeighted = $('viewWeighted')?.checked || false;
+        if (viewWeighted) params.set('viewWeighted', 'true');
+    } else {
+        const methodMap = {
+            'cgal_conformal': 'conformal', 'cgal_arap': 'arap',
+            'cgal_authalic': 'authalic', 'cgal_mvc': 'mvc',
+        };
+        params.set('method', methodMap[method] || 'conformal');
+    }
+
+    const url = `${SERVER_URL}${endpoint}?${params}`;
+    const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: glbBuffer,
+    });
+
+    if (!resp.ok) {
+        const err = await resp.text();
+        throw new Error(`Server error ${resp.status}: ${err}`);
+    }
+
+    const metricsHeader = resp.headers.get('X-Metrics');
+    const glb = await resp.arrayBuffer();
+    return { glb, metrics: metricsHeader };
+}
+
 // --- Web Worker management ---
 let paramWorker = null;
 let remeshWorker = null;
@@ -184,54 +249,76 @@ function getRemeshWorker() {
     return remeshWorker;
 }
 
-function callWorker(worker, action, data) {
+function callWorker(worker, action, data, timeoutMs = 120000) {
     return new Promise((resolve, reject) => {
         const id = ++workerIdCounter;
+        const timer = setTimeout(() => {
+            delete workerCallbacks[id];
+            reject(new Error(`Worker timeout (${timeoutMs / 1000}s). Mesh may be too large for client-side processing.`));
+        }, timeoutMs);
         workerCallbacks[id] = (result) => {
+            clearTimeout(timer);
             if (result.ok) resolve(result);
             else reject(new Error(result.error));
         };
-        // Transfer the GLB buffer to avoid copying
-        const glbCopy = data.glb.slice(0); // copy so we can transfer
+        const glbCopy = data.glb.slice(0);
         worker.postMessage({ id, action, data: { ...data, glb: glbCopy } }, [glbCopy]);
     });
 }
 
-// --- Parameterization (via Web Worker) ---
+// --- Parameterization (auto-routes between server and WASM worker) ---
 async function parameterize(glbBuffer, method) {
-    const isHeat = method === 'heat';
-    const worker = getParamWorker();
+    console.log('[param] Starting parameterization, method=' + method + ', size=' + glbBuffer.byteLength);
+    // Estimate vertex count from GLB size (rough: ~12 bytes/vertex for positions)
+    const roughVertCount = Math.round(glbBuffer.byteLength / 20);
+    const estimatedMs = estimateWasmTime(roughVertCount, method);
+    const hasServer = await checkServer();
+    const useServer = hasServer && estimatedMs > WASM_TIME_LIMIT;
+
+    const backend = useServer ? 'server' : 'WASM';
+    console.log(`[param] ${method} on ~${roughVertCount} verts, est ${estimatedMs.toFixed(0)}ms WASM → using ${backend}`);
 
     const t0 = performance.now();
+    let resultGlb, metricsStr;
 
-    let result;
-    if (isHeat) {
-        const viewWeighted = $('viewWeighted')?.checked || false;
-        result = await callWorker(worker, 'parameterize_heat', {
-            glb: glbBuffer,
-            viewWeighted,
-            viewDir: [0, 0, 1],
-        });
+    if (useServer) {
+        setStatus(`Running ${method} on server...`, 'working');
+        const result = await parameterizeViaServer(glbBuffer, method);
+        resultGlb = result.glb;
+        metricsStr = result.metrics;
     } else {
-        const methodMap = {
-            'cgal_conformal': 'conformal',
-            'cgal_arap': 'arap',
-            'cgal_authalic': 'authalic',
-            'cgal_mvc': 'mvc',
-        };
-        result = await callWorker(worker, 'parameterize_cgal', {
-            glb: glbBuffer,
-            method: methodMap[method] || 'conformal',
-        });
+        const worker = getParamWorker();
+        const isHeat = method === 'heat';
+
+        let result;
+        if (isHeat) {
+            const viewWeighted = $('viewWeighted')?.checked || false;
+            result = await callWorker(worker, 'parameterize_heat', {
+                glb: glbBuffer,
+                viewWeighted,
+                viewDir: [0, 0, 1],
+            });
+        } else {
+            const methodMap = {
+                'cgal_conformal': 'conformal', 'cgal_arap': 'arap',
+                'cgal_authalic': 'authalic', 'cgal_mvc': 'mvc',
+            };
+            result = await callWorker(worker, 'parameterize_cgal', {
+                glb: glbBuffer,
+                method: methodMap[method] || 'conformal',
+            });
+        }
+        resultGlb = result.glb;
+        metricsStr = result.metrics;
     }
 
     const elapsed = performance.now() - t0;
-    setMetric('metParamTime', `${elapsed.toFixed(0)} ms`);
+    setMetric('metParamTime', `${elapsed.toFixed(0)} ms (${backend})`);
 
     // Read metrics
     try {
-        if (result.metrics) {
-            const m = JSON.parse(result.metrics);
+        if (metricsStr) {
+            const m = JSON.parse(metricsStr);
             if (m.angle_mean != null) setMetric('metAngle', m.angle_mean.toFixed(2) + '\u00b0');
             if (m.angle_max != null) setMetric('metAngleMax', m.angle_max.toFixed(2) + '\u00b0');
             if (m.area_mean != null) setMetric('metArea', m.area_mean.toFixed(3));
@@ -242,7 +329,7 @@ async function parameterize(glbBuffer, method) {
         console.warn('Could not read metrics:', e);
     }
 
-    return result.glb;
+    return resultGlb;
 }
 
 // --- File input handler ---
@@ -307,6 +394,7 @@ paramBtn.addEventListener('click', async () => {
 
     paramBtn.disabled = true;
     paramInfo.textContent = '';
+    console.log('[click] glb=', glb, 'byteLength=', glb?.byteLength, 'method=', method);
     setStatus(`Running ${method} parameterization...`, 'working');
 
     try {

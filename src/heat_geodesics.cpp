@@ -6,6 +6,10 @@
 #include <algorithm>
 #include <stdexcept>
 
+#ifdef MESHPARAM_OPENMP
+#include <omp.h>
+#endif
+
 namespace meshparam {
 
 HeatGeodesicSolver build_heat_solver(
@@ -175,6 +179,9 @@ Eigen::MatrixXd compute_geodesic_matrix(const HeatGeodesicSolver& solver) {
     int n = solver.n;
     Eigen::MatrixXd G(n, n);
 
+    #ifdef MESHPARAM_OPENMP
+    #pragma omp parallel for schedule(dynamic)
+    #endif
     for (int i = 0; i < n; ++i) {
         G.row(i) = geodesic_from_vertex(solver, i).transpose();
     }
