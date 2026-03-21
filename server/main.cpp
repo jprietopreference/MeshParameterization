@@ -27,6 +27,70 @@
 #include <atomic>
 
 // ============================================================
+// Mesh healing: remove degenerate triangles before parameterization
+// ============================================================
+void heal_mesh(std::vector<uint8_t>& glb_data) {
+    auto mesh = meshparam::load_gltf_from_memory(glb_data);
+    int n = mesh.num_vertices();
+    int m = mesh.num_faces();
+
+    // Remove degenerate triangles (zero area or near-zero area)
+    std::vector<bool> keep(m, true);
+    int removed = 0;
+    double min_area = 1e-10;
+
+    for (int i = 0; i < m; ++i) {
+        int i0 = mesh.F(i, 0), i1 = mesh.F(i, 1), i2 = mesh.F(i, 2);
+        // Degenerate: duplicate vertex indices
+        if (i0 == i1 || i1 == i2 || i0 == i2) { keep[i] = false; removed++; continue; }
+        // Degenerate: zero/tiny area
+        Eigen::Vector3d e1 = mesh.V.row(i1) - mesh.V.row(i0);
+        Eigen::Vector3d e2 = mesh.V.row(i2) - mesh.V.row(i0);
+        double area = e1.cross(e2).norm() * 0.5;
+        if (area < min_area) { keep[i] = false; removed++; }
+    }
+
+    if (removed == 0) return; // nothing to heal
+
+    std::cout << "[heal] Removed " << removed << " degenerate triangles (" << m << " → " << (m - removed) << ")" << std::endl;
+
+    // Rebuild face matrix
+    Eigen::MatrixXi newF(m - removed, 3);
+    int j = 0;
+    for (int i = 0; i < m; ++i) {
+        if (keep[i]) { newF.row(j++) = mesh.F.row(i); }
+    }
+    mesh.F = newF;
+
+    // Remove unreferenced vertices
+    std::vector<bool> used(n, false);
+    for (int i = 0; i < mesh.num_faces(); ++i) {
+        used[mesh.F(i, 0)] = true;
+        used[mesh.F(i, 1)] = true;
+        used[mesh.F(i, 2)] = true;
+    }
+    std::vector<int> remap(n, -1);
+    int new_n = 0;
+    for (int i = 0; i < n; ++i) {
+        if (used[i]) remap[i] = new_n++;
+    }
+
+    Eigen::MatrixXd newV(new_n, 3);
+    for (int i = 0; i < n; ++i) {
+        if (remap[i] >= 0) newV.row(remap[i]) = mesh.V.row(i);
+    }
+    for (int i = 0; i < mesh.num_faces(); ++i) {
+        mesh.F(i, 0) = remap[mesh.F(i, 0)];
+        mesh.F(i, 1) = remap[mesh.F(i, 1)];
+        mesh.F(i, 2) = remap[mesh.F(i, 2)];
+    }
+    mesh.V = newV;
+
+    // Re-serialize
+    glb_data = meshparam::save_gltf_to_memory(mesh);
+}
+
+// ============================================================
 // Method result
 // ============================================================
 struct MethodResult {
@@ -131,7 +195,11 @@ MethodResult run_cgal(const std::vector<uint8_t>& input_glb, cgalparam::ParamMet
 
         auto metrics = cgalparam::compute_distortion(result.V, result.F, result.UV);
 
-        r.glb = cgalparam::save_gltf_to_memory(result);
+        // Convert to meshparam::TriMesh to get normals in the output
+        meshparam::TriMesh out;
+        out.V = result.V; out.F = result.F; out.UV = result.UV;
+        out.compute_normals();
+        r.glb = meshparam::save_gltf_to_memory(out);
         r.success = true;
         r.vertices = result.num_vertices();
         r.faces = result.num_faces();
@@ -231,6 +299,9 @@ int main(int argc, char* argv[]) {
         bool view_weighted = req.has_param("viewWeighted") && req.get_param_value("viewWeighted") == "true";
 
         std::vector<uint8_t> input(req.body.begin(), req.body.end());
+
+        // Heal degenerate triangles before parameterization
+        heal_mesh(input);
 
         // Determine which methods to run
         struct MethodDef { std::string name; };

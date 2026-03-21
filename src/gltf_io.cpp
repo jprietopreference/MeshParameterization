@@ -203,11 +203,15 @@ std::vector<uint8_t> save_gltf_to_memory(const TriMesh& mesh) {
     tinygltf::Model model;
     tinygltf::TinyGLTF writer;
 
-    // Write shared-vertex mesh (positions + optional UVs + indices).
-    // Normals are NOT included — the Python assembly step adds per-face
-    // OCC normals from the sidecar .facenormals.bin file.
+    // Write shared-vertex mesh (positions + normals + optional UVs + indices).
     int n = mesh.num_vertices();
     int m = mesh.num_faces();
+
+    // Compute normals if not present
+    Eigen::MatrixXd normals = mesh.N;
+    if (!mesh.has_normals()) {
+        igl::per_vertex_normals(mesh.V, mesh.F, normals);
+    }
 
     std::vector<uint8_t> buffer_data;
 
@@ -218,6 +222,15 @@ std::vector<uint8_t> save_gltf_to_memory(const TriMesh& mesh) {
     for (int i = 0; i < n; ++i) {
         float v[3] = {(float)mesh.V(i, 0), (float)mesh.V(i, 1), (float)mesh.V(i, 2)};
         std::memcpy(buffer_data.data() + i * 3 * sizeof(float), v, 3 * sizeof(float));
+    }
+
+    // Normals: n * 3 * float
+    size_t nrm_offset = buffer_data.size();
+    size_t nrm_size = n * 3 * sizeof(float);
+    buffer_data.resize(nrm_offset + nrm_size);
+    for (int i = 0; i < n; ++i) {
+        float nrm[3] = {(float)normals(i, 0), (float)normals(i, 1), (float)normals(i, 2)};
+        std::memcpy(buffer_data.data() + nrm_offset + i * 3 * sizeof(float), nrm, 3 * sizeof(float));
     }
 
     // UVs: n * 2 * float
@@ -254,6 +267,15 @@ std::vector<uint8_t> save_gltf_to_memory(const TriMesh& mesh) {
     pos_bv.target = TINYGLTF_TARGET_ARRAY_BUFFER;
     model.bufferViews.push_back(pos_bv);
 
+    // BufferView 1: normals
+    tinygltf::BufferView nrm_bv;
+    nrm_bv.buffer = 0;
+    nrm_bv.byteOffset = nrm_offset;
+    nrm_bv.byteLength = nrm_size;
+    nrm_bv.target = TINYGLTF_TARGET_ARRAY_BUFFER;
+    int nrm_bv_idx = static_cast<int>(model.bufferViews.size());
+    model.bufferViews.push_back(nrm_bv);
+
     int uv_bv_idx = -1;
     if (mesh.has_uvs()) {
         tinygltf::BufferView uv_bv;
@@ -284,6 +306,16 @@ std::vector<uint8_t> save_gltf_to_memory(const TriMesh& mesh) {
     pos_acc.maxValues = {mesh.V.col(0).maxCoeff(), mesh.V.col(1).maxCoeff(), mesh.V.col(2).maxCoeff()};
     model.accessors.push_back(pos_acc);
 
+    // Accessor 1: normals
+    tinygltf::Accessor nrm_acc;
+    nrm_acc.bufferView = nrm_bv_idx;
+    nrm_acc.byteOffset = 0;
+    nrm_acc.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+    nrm_acc.count = n;
+    nrm_acc.type = TINYGLTF_TYPE_VEC3;
+    int nrm_acc_idx = static_cast<int>(model.accessors.size());
+    model.accessors.push_back(nrm_acc);
+
     int uv_acc_idx = -1;
     if (mesh.has_uvs()) {
         tinygltf::Accessor uv_acc;
@@ -308,6 +340,7 @@ std::vector<uint8_t> save_gltf_to_memory(const TriMesh& mesh) {
     // Primitive
     tinygltf::Primitive prim;
     prim.attributes["POSITION"] = 0;
+    prim.attributes["NORMAL"] = nrm_acc_idx;
     if (uv_acc_idx >= 0) {
         prim.attributes["TEXCOORD_0"] = uv_acc_idx;
     }
