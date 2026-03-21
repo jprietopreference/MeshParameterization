@@ -29,15 +29,20 @@
 // ============================================================
 // Mesh healing: remove degenerate triangles before parameterization
 // ============================================================
-void heal_mesh(std::vector<uint8_t>& glb_data) {
+void heal_mesh(std::vector<uint8_t>& glb_data, bool force = false) {
     auto mesh = meshparam::load_gltf_from_memory(glb_data);
     int n = mesh.num_vertices();
     int m = mesh.num_faces();
 
-    // Remove degenerate triangles (zero area or near-zero area)
+    // Two thresholds:
+    //   strict (1e-10): truly degenerate — always removed
+    //   loose (1e-6):   near-degenerate — removed only when force=true
+    // This way auto-heal catches zero-area triangles silently,
+    // and "Force mesh healing" also catches borderline cases.
+    double min_area = force ? 1e-6 : 1e-10;
+
     std::vector<bool> keep(m, true);
     int removed = 0;
-    double min_area = 1e-10;
 
     for (int i = 0; i < m; ++i) {
         int i0 = mesh.F(i, 0), i1 = mesh.F(i, 1), i2 = mesh.F(i, 2);
@@ -50,7 +55,8 @@ void heal_mesh(std::vector<uint8_t>& glb_data) {
 
     if (removed == 0) return;
 
-    std::cout << "[heal] Removed " << removed << " degenerate triangles (" << m << " → " << (m - removed) << ")" << std::endl;
+    std::cout << "[heal] Removed " << removed << " degenerate triangles (" << m << " → " << (m - removed) << ")"
+              << (force ? " [forced]" : " [auto]") << std::endl;
 
     // Rebuild face matrix
     Eigen::MatrixXi newF(m - removed, 3);
@@ -305,11 +311,10 @@ int main(int argc, char* argv[]) {
 
         std::vector<uint8_t> input(req.body.begin(), req.body.end());
 
-        // Heal degenerate triangles if requested
-        bool do_heal = req.has_param("heal") && req.get_param_value("heal") == "true";
-        if (do_heal) {
-            heal_mesh(input);
-        }
+        // Always auto-detect and heal degenerate triangles.
+        // The "heal" flag forces healing even for near-degenerate cases (looser threshold).
+        bool force_heal = req.has_param("heal") && req.get_param_value("heal") == "true";
+        heal_mesh(input, force_heal);
 
         // Determine which methods to run
         struct MethodDef { std::string name; };
