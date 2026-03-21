@@ -113,6 +113,7 @@ async function apiParameterize(glbBuffer, method, viewWeighted, forceHeal) {
         method: r.headers.get('X-Method'),
         metrics: r.headers.get('X-Metrics'),
         allMethods: r.headers.get('X-All-Methods'),
+        healInfo: r.headers.get('X-Heal-Info'),
     };
 }
 
@@ -211,10 +212,28 @@ $('paramBtn').addEventListener('click', async () => {
             } catch (e) {}
         }
 
+        // Show healing info
+        if (result.healInfo) {
+            try {
+                const h = JSON.parse(result.healInfo);
+                const parts = [];
+                if (h.removed > 0) parts.push(`${h.removed} removed`);
+                if (h.perturbed > 0) parts.push(`${h.perturbed} perturbed`);
+                if (parts.length > 0) {
+                    $('paramInfo').textContent = `Healed: ${parts.join(', ')}${h.forced ? ' [forced]' : ''}`;
+                }
+            } catch (e) {}
+        }
+
+        // Build seam lines from UV discontinuities (light blue)
+        if (currentMesh && $('showSeams')?.checked) {
+            showSeamLines(currentMesh);
+        }
+
         $('viewPanel').style.display = 'block';
         $('exportPanel').style.display = 'block';
-        $('paramInfo').textContent = result.method || method;
-        setStatus(`Done — winner: ${result.method} (${elapsed.toFixed(0)} ms total)`, '');
+        const healNote = result.healInfo ? (() => { try { const h=JSON.parse(result.healInfo); return h.removed+h.perturbed > 0 ? `, healed ${h.removed+h.perturbed} tris` : ''; } catch(e){ return ''; }})() : '';
+        setStatus(`Done — winner: ${result.method} (${elapsed.toFixed(0)} ms${healNote})`, '');
     } catch (err) {
         setStatus(`Error: ${err.message}`, 'error');
         $('paramInfo').textContent = err.message;
@@ -222,6 +241,67 @@ $('paramBtn').addEventListener('click', async () => {
         $('paramBtn').disabled = false;
     }
 });
+
+// --- Seam visualization ---
+function showSeamLines(mesh) {
+    // Remove old seam lines
+    scene.meshes.filter(m => m.name === '_seam_lines').forEach(m => m.dispose());
+
+    if (!mesh || !mesh.isVerticesDataPresent(BABYLON.VertexBuffer.UVKind)) return;
+
+    const positions = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+    const uvs = mesh.getVerticesData(BABYLON.VertexBuffer.UVKind);
+    const indices = mesh.getIndices();
+    if (!positions || !uvs || !indices) return;
+
+    // Find edges where UVs are discontinuous (seam edges)
+    // An edge is a seam if it appears in two triangles but the UV coordinates differ
+    const edgeMap = new Map(); // "min_max" -> [{triIdx, uvA, uvB}]
+    for (let t = 0; t < indices.length; t += 3) {
+        for (let e = 0; e < 3; e++) {
+            const a = indices[t + e], b = indices[t + (e + 1) % 3];
+            const key = Math.min(a, b) + '_' + Math.max(a, b);
+            if (!edgeMap.has(key)) edgeMap.set(key, []);
+            edgeMap.get(key).push({
+                uA: [uvs[a * 2], uvs[a * 2 + 1]],
+                uB: [uvs[b * 2], uvs[b * 2 + 1]],
+            });
+        }
+    }
+
+    // Seam = edge shared by 2 triangles with different UVs at same vertex
+    // Also: boundary edges (only 1 triangle) are seams
+    const seamPoints = [];
+    for (const [key, entries] of edgeMap) {
+        const [a, b] = key.split('_').map(Number);
+        let isSeam = false;
+
+        if (entries.length === 1) {
+            isSeam = true; // boundary edge
+        } else if (entries.length >= 2) {
+            // Check if UVs differ across the two triangles for vertex a or b
+            const d0 = Math.abs(entries[0].uA[0] - entries[1].uA[0]) + Math.abs(entries[0].uA[1] - entries[1].uA[1]);
+            const d1 = Math.abs(entries[0].uB[0] - entries[1].uB[0]) + Math.abs(entries[0].uB[1] - entries[1].uB[1]);
+            if (d0 > 0.001 || d1 > 0.001) isSeam = true;
+        }
+
+        if (isSeam) {
+            seamPoints.push(
+                new BABYLON.Vector3(positions[a*3], positions[a*3+1], positions[a*3+2]),
+                new BABYLON.Vector3(positions[b*3], positions[b*3+1], positions[b*3+2]),
+            );
+        }
+    }
+
+    if (seamPoints.length > 0) {
+        const lines = BABYLON.MeshBuilder.CreateLineSystem('_seam_lines', {
+            lines: Array.from({length: seamPoints.length / 2}, (_, i) =>
+                [seamPoints[i * 2], seamPoints[i * 2 + 1]]),
+        }, scene);
+        lines.color = new BABYLON.Color3(0.3, 0.7, 1.0); // light blue
+        lines.isPickable = false;
+    }
+}
 
 // --- Display options ---
 $('textureSelect').addEventListener('change', () => {
@@ -251,6 +331,14 @@ $('textureSelect').addEventListener('change', () => {
 
 $('showWireframe').addEventListener('change', () => {
     if (currentMesh?.material) currentMesh.material.wireframe = $('showWireframe').checked;
+});
+
+$('showSeams')?.addEventListener('change', () => {
+    if ($('showSeams').checked && currentMesh) {
+        showSeamLines(currentMesh);
+    } else {
+        scene?.meshes.filter(m => m.name === '_seam_lines').forEach(m => m.dispose());
+    }
 });
 
 // --- Export ---

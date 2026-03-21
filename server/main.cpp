@@ -88,7 +88,21 @@ std::vector<uint8_t> weld_vertices(const std::vector<uint8_t>& glb_data) {
 // ============================================================
 // Mesh healing: remove degenerate triangles before parameterization
 // ============================================================
-void heal_mesh(std::vector<uint8_t>& glb_data, bool force = false) {
+struct HealStats {
+    int removed = 0;
+    int perturbed = 0;
+    bool forced = false;
+    std::string to_json() const {
+        std::ostringstream o;
+        o << "{\"removed\":" << removed << ",\"perturbed\":" << perturbed
+          << ",\"forced\":" << (forced ? "true" : "false") << "}";
+        return o.str();
+    }
+};
+
+HealStats heal_mesh(std::vector<uint8_t>& glb_data, bool force = false) {
+    HealStats stats;
+    stats.forced = force;
     auto mesh = meshparam::load_gltf_from_memory(glb_data);
     int n = mesh.num_vertices();
     int m = mesh.num_faces();
@@ -128,7 +142,9 @@ void heal_mesh(std::vector<uint8_t>& glb_data, bool force = false) {
         }
     }
 
-    if (removed == 0) return;
+    stats.removed = removed;
+    stats.perturbed = perturbed;
+    if (removed == 0 && perturbed == 0) return stats;
 
     if (perturbed > 0)
         std::cout << "[heal] Perturbed " << perturbed << " collinear triangles" << std::endl;
@@ -176,6 +192,7 @@ void heal_mesh(std::vector<uint8_t>& glb_data, bool force = false) {
     if (has_normals) mesh.N = newN;
 
     glb_data = meshparam::save_gltf_to_memory(mesh);
+    return stats;
 }
 
 // ============================================================
@@ -427,7 +444,7 @@ int main(int argc, char* argv[]) {
         res.set_header("Access-Control-Allow-Origin", "*");
         res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         res.set_header("Access-Control-Allow-Headers", "Content-Type");
-        res.set_header("Access-Control-Expose-Headers", "X-Metrics, X-Method, X-All-Methods");
+        res.set_header("Access-Control-Expose-Headers", "X-Metrics, X-Method, X-All-Methods, X-Heal-Info");
     });
 
     svr.Options("/api/(.*)", [](const httplib::Request&, httplib::Response& res) {
@@ -452,16 +469,19 @@ int main(int argc, char* argv[]) {
         std::vector<uint8_t> input_original = input;
 
         bool force_heal = req.has_param("heal") && req.get_param_value("heal") == "true";
-        heal_mesh(input, force_heal);
+        auto heal1 = heal_mesh(input, force_heal);
 
-        // Weld split vertices for parameterization (OCC splits at face boundaries
-        // for correct normals, but parameterization needs shared connectivity).
-        // We keep the healed split mesh to re-apply normals to the output.
+        // Weld split vertices for parameterization
         std::vector<uint8_t> input_for_param = weld_vertices(input);
 
-        // Heal again after welding — welding can create new degenerate triangles
-        // when two split vertices at the same position get merged
-        heal_mesh(input_for_param, force_heal);
+        // Heal again after welding
+        auto heal2 = heal_mesh(input_for_param, force_heal);
+
+        // Combine heal stats
+        HealStats heal_total;
+        heal_total.removed = heal1.removed + heal2.removed;
+        heal_total.perturbed = heal1.perturbed + heal2.perturbed;
+        heal_total.forced = force_heal;
 
         // Determine which methods to run
         struct MethodDef { std::string name; };
@@ -591,6 +611,7 @@ int main(int argc, char* argv[]) {
         res.set_header("X-Method", best.method);
         res.set_header("X-Metrics", best.to_json());
         res.set_header("X-All-Methods", all.str());
+        res.set_header("X-Heal-Info", heal_total.to_json());
         res.set_content(std::string(best.glb.begin(), best.glb.end()), "model/gltf-binary");
     });
 
