@@ -93,32 +93,45 @@ void heal_mesh(std::vector<uint8_t>& glb_data, bool force = false) {
     int n = mesh.num_vertices();
     int m = mesh.num_faces();
 
-    // Two thresholds:
-    //   strict (1e-10): truly degenerate — always removed
-    //   loose (1e-6):   near-degenerate — removed only when force=true
-    // This way auto-heal catches zero-area triangles silently,
-    // and "Force mesh healing" also catches borderline cases.
-    double min_area = force ? 1e-6 : 1e-10;
+    // Area threshold for collinear detection and perturbation.
+    // Triangles below this threshold get their middle vertex perturbed.
+    // Must be generous enough to catch near-collinear triangles that
+    // produce NaN cotangent weights.
+    double min_area = force ? 1e-4 : 1e-8;
 
     std::vector<bool> keep(m, true);
     int removed = 0;
 
+    int perturbed = 0;
     for (int i = 0; i < m; ++i) {
         int i0 = mesh.F(i, 0), i1 = mesh.F(i, 1), i2 = mesh.F(i, 2);
-        // Only remove triangles with duplicate vertex indices.
-        // Zero-area collinear triangles are kept — they're topologically needed
-        // to maintain the surface closure (removing them creates holes → genus change).
+        // Remove triangles with duplicate vertex indices
         if (i0 == i1 || i1 == i2 || i0 == i2) { keep[i] = false; removed++; continue; }
-        if (force) {
-            Eigen::Vector3d e1 = mesh.V.row(i1) - mesh.V.row(i0);
-            Eigen::Vector3d e2 = mesh.V.row(i2) - mesh.V.row(i0);
-            double area = e1.cross(e2).norm() * 0.5;
-            if (area < min_area) { keep[i] = false; removed++; }
+        // Check for collinear/zero-area triangles
+        Eigen::Vector3d e1 = mesh.V.row(i1) - mesh.V.row(i0);
+        Eigen::Vector3d e2 = mesh.V.row(i2) - mesh.V.row(i0);
+        Eigen::Vector3d cross = e1.cross(e2);
+        double area = cross.norm() * 0.5;
+        if (area < min_area) {
+            // Don't remove — perturb the middle vertex to create non-zero area.
+            // This preserves topology while fixing the degenerate cotangent weights.
+            Eigen::Vector3d edge = (mesh.V.row(i2) - mesh.V.row(i0)).normalized();
+            // Find a perpendicular direction
+            Eigen::Vector3d perp;
+            if (std::abs(edge.x()) < 0.9) perp = edge.cross(Eigen::Vector3d(1,0,0));
+            else perp = edge.cross(Eigen::Vector3d(0,1,0));
+            perp.normalize();
+            // Perturb middle vertex (i1) by a tiny epsilon perpendicular to the edge
+            double epsilon = 1e-6;
+            mesh.V.row(i1) = mesh.V.row(i1) + epsilon * perp.transpose();
+            perturbed++;
         }
     }
 
     if (removed == 0) return;
 
+    if (perturbed > 0)
+        std::cout << "[heal] Perturbed " << perturbed << " collinear triangles" << std::endl;
     std::cout << "[heal] Removed " << removed << " degenerate triangles (" << m << " → " << (m - removed) << ")"
               << (force ? " [forced]" : " [auto]") << std::endl;
 
