@@ -25,6 +25,64 @@
 #include <algorithm>
 #include <cmath>
 #include <atomic>
+#include <unordered_map>
+#include <array>
+
+// ============================================================
+// Vertex welding: merge split vertices (same position) for parameterization
+// ============================================================
+std::vector<uint8_t> weld_vertices(const std::vector<uint8_t>& glb_data) {
+    auto mesh = meshparam::load_gltf_from_memory(glb_data);
+    int n = mesh.num_vertices();
+    int m = mesh.num_faces();
+
+    // Build position → first vertex index map (quantize to 1e-6 for welding)
+    struct Vec3Hash {
+        size_t operator()(const std::array<int64_t,3>& v) const {
+            size_t h = 0;
+            for (auto x : v) h ^= std::hash<int64_t>()(x) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+    std::unordered_map<std::array<int64_t,3>, int, Vec3Hash> pos_map;
+    std::vector<int> remap(n);
+    int new_n = 0;
+
+    for (int i = 0; i < n; ++i) {
+        std::array<int64_t,3> key = {
+            static_cast<int64_t>(std::round(mesh.V(i,0) * 1e6)),
+            static_cast<int64_t>(std::round(mesh.V(i,1) * 1e6)),
+            static_cast<int64_t>(std::round(mesh.V(i,2) * 1e6))
+        };
+        auto it = pos_map.find(key);
+        if (it != pos_map.end()) {
+            remap[i] = it->second;
+        } else {
+            remap[i] = new_n;
+            pos_map[key] = new_n;
+            new_n++;
+        }
+    }
+
+    if (new_n == n) return glb_data; // already welded
+
+    std::cout << "[weld] Welded " << n << " → " << new_n << " vertices" << std::endl;
+
+    // Build welded mesh (positions only, no normals — those stay on the original)
+    meshparam::TriMesh welded;
+    welded.V.resize(new_n, 3);
+    for (int i = 0; i < n; ++i) {
+        welded.V.row(remap[i]) = mesh.V.row(i);
+    }
+    welded.F.resize(m, 3);
+    for (int i = 0; i < m; ++i) {
+        welded.F(i, 0) = remap[mesh.F(i, 0)];
+        welded.F(i, 1) = remap[mesh.F(i, 1)];
+        welded.F(i, 2) = remap[mesh.F(i, 2)];
+    }
+
+    return meshparam::save_gltf_to_memory(welded);
+}
 
 // ============================================================
 // Mesh healing: remove degenerate triangles before parameterization
@@ -316,6 +374,11 @@ int main(int argc, char* argv[]) {
         bool force_heal = req.has_param("heal") && req.get_param_value("heal") == "true";
         heal_mesh(input, force_heal);
 
+        // Weld split vertices for parameterization (OCC splits at face boundaries
+        // for correct normals, but parameterization needs shared connectivity).
+        // We keep the original split mesh to re-apply normals to the output.
+        std::vector<uint8_t> input_for_param = weld_vertices(input);
+
         // Determine which methods to run
         struct MethodDef { std::string name; };
         std::vector<MethodDef> methods_to_run;
@@ -326,7 +389,7 @@ int main(int argc, char* argv[]) {
             methods_to_run = {{forced_method}};
         }
 
-        // Run all methods in parallel
+        // Run all methods in parallel on the WELDED mesh
         std::vector<MethodResult> results(methods_to_run.size());
         std::vector<std::thread> workers;
 
@@ -334,15 +397,15 @@ int main(int argc, char* argv[]) {
             workers.emplace_back([&, i]() {
                 const auto& mdef = methods_to_run[i];
                 if (mdef.name == "heat") {
-                    results[i] = run_heat(input, view_weighted);
+                    results[i] = run_heat(input_for_param, view_weighted);
                 } else if (mdef.name == "cgal_conformal") {
-                    results[i] = run_cgal(input, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal");
+                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal");
                 } else if (mdef.name == "cgal_arap") {
-                    results[i] = run_cgal(input, cgalparam::ParamMethod::ARAP, "cgal_arap");
+                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::ARAP, "cgal_arap");
                 } else if (mdef.name == "cgal_authalic") {
-                    results[i] = run_cgal(input, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic");
+                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic");
                 } else if (mdef.name == "cgal_mvc") {
-                    results[i] = run_cgal(input, cgalparam::ParamMethod::MeanValue, "cgal_mvc");
+                    results[i] = run_cgal(input_for_param, cgalparam::ParamMethod::MeanValue, "cgal_mvc");
                 } else {
                     results[i].method = mdef.name;
                     results[i].error = "Unknown method";
@@ -382,6 +445,55 @@ int main(int argc, char* argv[]) {
         auto& best = results[best_idx];
         std::cout << "  [broker] Winner: " << best.method
                   << " (score=" << best.score() << ")" << std::endl;
+
+        // Re-apply original normals from the input mesh to the parameterized output.
+        // The parameterization ran on welded vertices; now map UVs back to the
+        // original split-vertex mesh so normals from OCC surfaces are preserved.
+        {
+            auto orig = meshparam::load_gltf_from_memory(input); // original with normals
+            auto param = meshparam::load_gltf_from_memory(best.glb); // welded with UVs
+
+            if (orig.has_normals() && param.has_uvs() && orig.num_vertices() != param.num_vertices()) {
+                // Build position → UV map from welded parameterized mesh
+                struct Vec3Hash {
+                    size_t operator()(const std::array<int64_t,3>& v) const {
+                        size_t h = 0;
+                        for (auto x : v) h ^= std::hash<int64_t>()(x) + 0x9e3779b9 + (h << 6) + (h >> 2);
+                        return h;
+                    }
+                };
+                std::unordered_map<std::array<int64_t,3>, int, Vec3Hash> pos_to_welded;
+                for (int i = 0; i < param.num_vertices(); ++i) {
+                    std::array<int64_t,3> key = {
+                        static_cast<int64_t>(std::round(param.V(i,0) * 1e6)),
+                        static_cast<int64_t>(std::round(param.V(i,1) * 1e6)),
+                        static_cast<int64_t>(std::round(param.V(i,2) * 1e6))
+                    };
+                    pos_to_welded[key] = i;
+                }
+
+                // Map UVs from welded → original split vertices
+                orig.UV.resize(orig.num_vertices(), 2);
+                int mapped = 0;
+                for (int i = 0; i < orig.num_vertices(); ++i) {
+                    std::array<int64_t,3> key = {
+                        static_cast<int64_t>(std::round(orig.V(i,0) * 1e6)),
+                        static_cast<int64_t>(std::round(orig.V(i,1) * 1e6)),
+                        static_cast<int64_t>(std::round(orig.V(i,2) * 1e6))
+                    };
+                    auto it = pos_to_welded.find(key);
+                    if (it != pos_to_welded.end()) {
+                        orig.UV.row(i) = param.UV.row(it->second);
+                        mapped++;
+                    }
+                }
+                std::cout << "  [broker] Mapped UVs to " << mapped << "/" << orig.num_vertices()
+                          << " split vertices (normals preserved)" << std::endl;
+                best.glb = meshparam::save_gltf_to_memory(orig);
+                best.vertices = orig.num_vertices();
+                best.faces = orig.num_faces();
+            }
+        }
 
         // Build all-methods JSON
         std::ostringstream all;
