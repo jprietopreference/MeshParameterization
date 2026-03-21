@@ -114,6 +114,127 @@ ED find_edge(const SurfaceMesh& mesh, VD v1, VD v2) {
     return SurfaceMesh::null_edge();
 }
 
+/// Cut a mesh along a given vertex path. Duplicates interior path vertices
+/// to create a boundary. Returns the cut mesh.
+SeamCutResult cut_along_path(const SurfaceMesh& input_mesh, const std::vector<VD>& path) {
+    SeamCutResult result;
+    int n_orig = static_cast<int>(input_mesh.number_of_vertices());
+    result.original_vertex_count = n_orig;
+
+    if (path.size() < 2) {
+        // Can't cut with less than 2 vertices — remove a face as fallback
+        result.cut_mesh = input_mesh;
+        auto f_it = result.cut_mesh.faces_begin();
+        if (f_it != result.cut_mesh.faces_end()) {
+            CGAL::Euler::remove_face(result.cut_mesh.halfedge(*f_it), result.cut_mesh);
+            result.cut_mesh.collect_garbage();
+        }
+        result.vertex_map.resize(n_orig);
+        for (int i = 0; i < n_orig; ++i) result.vertex_map[i] = i;
+        return result;
+    }
+
+    // Collect seam edges
+    std::set<ED> seam_edges;
+    for (size_t i = 0; i + 1 < path.size(); ++i) {
+        ED e = find_edge(input_mesh, path[i], path[i+1]);
+        if (e != SurfaceMesh::null_edge()) seam_edges.insert(e);
+    }
+
+    // BFS to assign face sides (0 or 1) across seam edges
+    const SurfaceMesh& sm = input_mesh;
+    std::map<face_descriptor, int> face_side;
+    std::set<face_descriptor> visited_faces;
+    std::queue<face_descriptor> bfs_q;
+
+    ED first_seam = *seam_edges.begin();
+    HD h0 = sm.halfedge(first_seam);
+    face_descriptor seed = sm.face(h0);
+    if (seed == SurfaceMesh::null_face()) seed = sm.face(sm.opposite(h0));
+
+    face_side[seed] = 0;
+    bfs_q.push(seed);
+    visited_faces.insert(seed);
+
+    while (!bfs_q.empty()) {
+        face_descriptor f = bfs_q.front(); bfs_q.pop();
+        int side = face_side[f];
+        for (auto h : sm.halfedges_around_face(sm.halfedge(f))) {
+            ED e = sm.edge(h);
+            face_descriptor nb = sm.face(sm.opposite(h));
+            if (nb == SurfaceMesh::null_face() || visited_faces.count(nb)) continue;
+            face_side[nb] = seam_edges.count(e) ? (1 - side) : side;
+            visited_faces.insert(nb);
+            bfs_q.push(nb);
+        }
+    }
+
+    // Rebuild mesh with duplicated interior seam vertices
+    std::set<VD> interior_seam(path.begin() + 1, path.end() - 1);
+
+    SurfaceMesh new_mesh;
+    std::vector<VD> orig_to_new(n_orig);
+    for (auto v : sm.vertices()) {
+        orig_to_new[static_cast<int>(v)] = new_mesh.add_vertex(sm.point(v));
+    }
+
+    result.vertex_map.resize(n_orig);
+    for (int i = 0; i < n_orig; ++i) result.vertex_map[i] = i;
+
+    std::map<int, VD> duplicates;
+    for (VD sv : interior_seam) {
+        int si = static_cast<int>(sv);
+        VD dup = new_mesh.add_vertex(sm.point(sv));
+        duplicates[si] = dup;
+        int di = static_cast<int>(dup);
+        if (di >= (int)result.vertex_map.size()) result.vertex_map.resize(di + 1);
+        result.vertex_map[di] = si;
+    }
+
+    for (auto f : sm.faces()) {
+        int side = face_side.count(f) ? face_side[f] : 0;
+        VD fv[3]; int k = 0;
+        for (auto v : sm.vertices_around_face(sm.halfedge(f))) {
+            int vi = static_cast<int>(v);
+            fv[k++] = (side == 1 && interior_seam.count(v)) ? duplicates[vi] : orig_to_new[vi];
+        }
+        if (k == 3) new_mesh.add_face(fv[0], fv[1], fv[2]);
+    }
+
+    new_mesh.collect_garbage();
+    result.cut_mesh = new_mesh;
+    result.vertex_map.resize(result.cut_mesh.number_of_vertices());
+
+    // Verify
+    if (!result.cut_mesh.is_valid(false)) {
+        std::cerr << "[seam] WARNING: cut mesh invalid, falling back" << std::endl;
+        result.cut_mesh = input_mesh;
+        auto f_it = result.cut_mesh.faces_begin();
+        CGAL::Euler::remove_face(result.cut_mesh.halfedge(*f_it), result.cut_mesh);
+        result.cut_mesh.collect_garbage();
+        result.vertex_map.resize(n_orig);
+        for (int i = 0; i < n_orig; ++i) result.vertex_map[i] = i;
+        return result;
+    }
+
+    HD new_border = CGAL::Polygon_mesh_processing::longest_border(result.cut_mesh).first;
+    if (new_border == SurfaceMesh::null_halfedge()) {
+        std::cerr << "[seam] WARNING: no boundary after cut, falling back" << std::endl;
+        result.cut_mesh = input_mesh;
+        auto f_it = result.cut_mesh.faces_begin();
+        CGAL::Euler::remove_face(result.cut_mesh.halfedge(*f_it), result.cut_mesh);
+        result.cut_mesh.collect_garbage();
+        result.vertex_map.resize(n_orig);
+        for (int i = 0; i < n_orig; ++i) result.vertex_map[i] = i;
+    } else {
+        int new_V = static_cast<int>(result.cut_mesh.number_of_vertices());
+        std::cout << "[seam] Cut: " << n_orig << " -> " << new_V << " verts "
+                  << "(+" << (new_V - n_orig) << " seam)" << std::endl;
+    }
+
+    return result;
+}
+
 } // anonymous namespace
 
 SeamCutResult cut_to_disk(const SurfaceMesh& input_mesh) {
@@ -163,173 +284,7 @@ SeamCutResult cut_to_disk(const SurfaceMesh& input_mesh) {
     }
 
     std::cout << "[seam] Seam path: " << path.size() << " vertices" << std::endl;
-
-    // Step 3: Collect seam edges
-    std::set<ED> seam_edges;
-    for (size_t i = 0; i + 1 < path.size(); ++i) {
-        ED e = find_edge(input_mesh, path[i], path[i+1]);
-        if (e != SurfaceMesh::null_edge()) {
-            seam_edges.insert(e);
-        }
-    }
-
-    // Step 4: Build cut mesh by duplicating vertices along the seam.
-    // For each seam vertex (except endpoints), create a duplicate.
-    // Faces on one side of the seam use the original vertex,
-    // faces on the other side use the duplicate.
-
-    // Start with a copy
-    result.cut_mesh = input_mesh;
-    SurfaceMesh& sm = result.cut_mesh;
-
-    // Initialize vertex map: identity
-    result.vertex_map.resize(n_orig + path.size());  // room for duplicates
-    for (int i = 0; i < n_orig; ++i) result.vertex_map[i] = i;
-
-    // For each interior seam vertex, determine which faces are on each side.
-    // We walk around the vertex and split at seam edges.
-    // Vertices at the path interior (not endpoints) need duplication.
-
-    // Identify which halfedges of seam edges to use for the "left" side
-    std::set<VD> seam_vertices(path.begin(), path.end());
-
-    // Use CGAL's Euler split operations along the seam path.
-    // The approach: for each edge in the seam path, we split the edge
-    // by inserting a new vertex, effectively creating a slit.
-    // But this changes the mesh topology significantly.
-
-    // Alternative simpler approach: rebuild the mesh from scratch,
-    // duplicating seam vertices for faces on one side.
-
-    // Determine face sides using BFS from seam edges.
-    // Each seam edge has two adjacent faces. We assign "side 0" and "side 1"
-    // by flood-filling from one side, stopping at seam edges.
-
-    // Build face adjacency (excluding seam edges)
-    std::map<face_descriptor, int> face_side;
-    std::set<face_descriptor> visited;
-    std::queue<face_descriptor> bfs_q;
-
-    // Start from one face adjacent to the first seam edge
-    ED first_seam = *seam_edges.begin();
-    HD h0 = sm.halfedge(first_seam);
-    face_descriptor seed_face = sm.face(h0);
-    if (seed_face == SurfaceMesh::null_face()) {
-        seed_face = sm.face(sm.opposite(h0));
-    }
-
-    face_side[seed_face] = 0;
-    bfs_q.push(seed_face);
-    visited.insert(seed_face);
-
-    while (!bfs_q.empty()) {
-        face_descriptor f = bfs_q.front(); bfs_q.pop();
-        int side = face_side[f];
-
-        for (auto h : sm.halfedges_around_face(sm.halfedge(f))) {
-            ED e = sm.edge(h);
-            face_descriptor neighbor = sm.face(sm.opposite(h));
-            if (neighbor == SurfaceMesh::null_face()) continue;
-            if (visited.count(neighbor)) continue;
-
-            if (seam_edges.count(e)) {
-                // Crossing a seam edge → flip side
-                face_side[neighbor] = 1 - side;
-            } else {
-                face_side[neighbor] = side;
-            }
-            visited.insert(neighbor);
-            bfs_q.push(neighbor);
-        }
-    }
-
-    // Now rebuild the mesh. For seam vertices, create duplicates for side 1.
-    // Endpoints of the path are NOT duplicated (they become the boundary endpoints).
-
-    std::set<VD> interior_seam_verts(path.begin() + 1, path.end() - 1);
-
-    // Map: (original_vertex, side) → new vertex index
-    std::map<std::pair<int, int>, VD> vert_remap;
-
-    SurfaceMesh new_mesh;
-    // First, add all original vertices
-    std::vector<VD> orig_to_new(n_orig);
-    for (auto v : sm.vertices()) {
-        int vi = static_cast<int>(v);
-        orig_to_new[vi] = new_mesh.add_vertex(sm.point(v));
-    }
-
-    // Add duplicates for interior seam vertices (side 1)
-    std::map<int, VD> seam_duplicates;  // original index → duplicate VD
-    for (VD sv : interior_seam_verts) {
-        int si = static_cast<int>(sv);
-        VD dup = new_mesh.add_vertex(sm.point(sv));
-        seam_duplicates[si] = dup;
-        // Update vertex map
-        int dup_idx = static_cast<int>(dup);
-        if (dup_idx >= static_cast<int>(result.vertex_map.size())) {
-            result.vertex_map.resize(dup_idx + 1);
-        }
-        result.vertex_map[dup_idx] = si;  // duplicate maps to original
-    }
-
-    // Add faces, remapping seam vertices for side 1
-    for (auto f : sm.faces()) {
-        int side = face_side.count(f) ? face_side[f] : 0;
-
-        VD fv[3];
-        int k = 0;
-        for (auto v : sm.vertices_around_face(sm.halfedge(f))) {
-            int vi = static_cast<int>(v);
-            if (side == 1 && interior_seam_verts.count(v)) {
-                fv[k] = seam_duplicates[vi];
-            } else {
-                fv[k] = orig_to_new[vi];
-            }
-            k++;
-        }
-        if (k == 3) {
-            new_mesh.add_face(fv[0], fv[1], fv[2]);
-        }
-    }
-
-    new_mesh.collect_garbage();
-    result.cut_mesh = new_mesh;
-
-    // Resize vertex map to actual size
-    result.vertex_map.resize(result.cut_mesh.number_of_vertices());
-
-    // Verify mesh validity
-    if (!result.cut_mesh.is_valid(false)) {
-        std::cerr << "[seam] WARNING: rebuilt mesh is invalid, falling back to face removal" << std::endl;
-        result.cut_mesh = input_mesh;
-        auto f_it = result.cut_mesh.faces_begin();
-        CGAL::Euler::remove_face(result.cut_mesh.halfedge(*f_it), result.cut_mesh);
-        result.cut_mesh.collect_garbage();
-        result.vertex_map.resize(n_orig);
-        for (int i = 0; i < n_orig; ++i) result.vertex_map[i] = i;
-        return result;
-    }
-
-    // Verify we now have a boundary
-    HD new_border = CGAL::Polygon_mesh_processing::longest_border(result.cut_mesh).first;
-    if (new_border == SurfaceMesh::null_halfedge()) {
-        std::cerr << "[seam] WARNING: cut did not create boundary, falling back to face removal"
-                  << std::endl;
-        result.cut_mesh = input_mesh;
-        auto f_it = result.cut_mesh.faces_begin();
-        CGAL::Euler::remove_face(result.cut_mesh.halfedge(*f_it), result.cut_mesh);
-        result.cut_mesh.collect_garbage();
-        result.vertex_map.resize(n_orig);
-        for (int i = 0; i < n_orig; ++i) result.vertex_map[i] = i;
-    } else {
-        int new_V = static_cast<int>(result.cut_mesh.number_of_vertices());
-        int new_F = static_cast<int>(result.cut_mesh.number_of_faces());
-        std::cout << "[seam] Cut mesh: " << new_V << " verts, " << new_F << " faces"
-                  << " (added " << (new_V - n_orig) << " seam vertices)" << std::endl;
-    }
-
-    return result;
+    return cut_along_path(input_mesh, path);
 }
 
 SeamCutResult cut_brep_silhouette(const SurfaceMesh& input_mesh,
@@ -483,26 +438,20 @@ SeamCutResult cut_brep_silhouette(const SurfaceMesh& input_mesh,
         return cut_to_disk(input_mesh);
     }
 
-    // For now, use BFS cut but with the seam path endpoints as poles
-    // This ensures the cut goes near the silhouette boundary
-    // TODO: implement direct seam path cutting on CGAL halfedge structure
-    std::cout << "[seam_brep] Using BFS seam with silhouette-informed poles" << std::endl;
-
-    // Use the path endpoints as seam poles
+    // The silhouette path may not be a simple mesh path (edges may not exist
+    // between all consecutive vertices). Use Dijkstra between the endpoints
+    // to find a valid mesh path that follows the silhouette.
     VD pole_a = best_path.front();
     VD pole_b = best_path.back();
-
-    // Compute shortest path between the poles (Dijkstra on mesh edges)
     auto path = dijkstra_path(input_mesh, pole_a, pole_b);
-    if (path.empty()) {
+
+    if (path.size() < 2) {
+        std::cout << "[seam_brep] No Dijkstra path, falling back to BFS" << std::endl;
         return cut_to_disk(input_mesh);
     }
 
-    std::cout << "[seam_brep] Dijkstra path between silhouette poles: " << path.size() << " vertices" << std::endl;
-
-    // Cut along this path using the existing cut_to_disk infrastructure
-    // (copy the mesh and duplicate path vertices)
-    return cut_to_disk(input_mesh);
+    std::cout << "[seam_brep] Cutting along silhouette path: " << path.size() << " vertices" << std::endl;
+    return cut_along_path(input_mesh, path);
 }
 
 } // namespace cgalparam
