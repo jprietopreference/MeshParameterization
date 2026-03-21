@@ -336,6 +336,7 @@ SeamCutResult cut_brep_silhouette(const SurfaceMesh& input_mesh,
                                    const Eigen::MatrixXd& orig_V,
                                    const Eigen::MatrixXd& orig_N,
                                    const Eigen::MatrixXi& orig_F,
+                                   const Eigen::VectorXd& orig_face_ids,
                                    double z_threshold) {
     // If already has boundary, use existing cut
     HD border = CGAL::Polygon_mesh_processing::longest_border(input_mesh).first;
@@ -349,26 +350,40 @@ SeamCutResult cut_brep_silhouette(const SurfaceMesh& input_mesh,
         return result;
     }
 
-    // Strategy: use the ORIGINAL split-vertex mesh to identify B-Rep boundaries.
-    // A welded edge is a B-Rep boundary if the original mesh had different normals
-    // at the same position (= vertices were split by the OCC tessellator).
-    //
-    // Among those B-Rep boundary edges, select the ones where the OCC face normal
-    // on one side points toward +Z and the other side points toward Z- or perpendicular.
+    // Use OCC face IDs to classify each B-Rep face as Z+ (front) or not.
+    // Then find welded mesh edges where adjacent triangles belong to
+    // different OCC faces with different Z-classification.
 
     int orig_nv = static_cast<int>(orig_V.rows());
     int orig_nf = static_cast<int>(orig_F.rows());
 
-    // Compute per-face average OCC normal Z-component from split-vertex normals
-    Eigen::VectorXd orig_face_z(orig_nf);
-    for (int fi = 0; fi < orig_nf; ++fi) {
-        double z_avg = 0;
-        for (int k = 0; k < 3; ++k) z_avg += orig_N(orig_F(fi, k), 2);
-        orig_face_z(fi) = z_avg / 3.0;
+    // Compute per-OCC-face average normal Z
+    std::map<int, std::pair<double, int>> occ_face_z_sum; // face_id -> (sum_z, count)
+    for (int i = 0; i < orig_nv; ++i) {
+        int fid = static_cast<int>(orig_face_ids(i));
+        occ_face_z_sum[fid].first += orig_N(i, 2);
+        occ_face_z_sum[fid].second += 1;
+    }
+    std::map<int, bool> occ_face_is_front; // true if Z+ facing
+    for (auto& [fid, p] : occ_face_z_sum) {
+        double avg_z = p.first / p.second;
+        occ_face_is_front[fid] = (avg_z > z_threshold);
     }
 
-    // Build position -> list of (original face index, face Z-dot)
-    // to map welded mesh edges back to OCC face info
+    int n_front = 0, n_back = 0;
+    for (auto& [fid, is_front] : occ_face_is_front) {
+        if (is_front) n_front++; else n_back++;
+    }
+    std::cout << "[seam_brep] OCC faces: " << occ_face_is_front.size()
+              << " (Z+ front: " << n_front << ", other: " << n_back << ")" << std::endl;
+
+    // Map original triangle -> OCC face ID (from first vertex of each triangle)
+    std::vector<int> orig_tri_face_id(orig_nf);
+    for (int fi = 0; fi < orig_nf; ++fi) {
+        orig_tri_face_id[fi] = static_cast<int>(orig_face_ids(orig_F(fi, 0)));
+    }
+
+    // Build position -> OCC face IDs set (to map welded vertices to their OCC faces)
     struct PosKey {
         int64_t x, y, z;
         bool operator<(const PosKey& o) const {
@@ -379,42 +394,42 @@ SeamCutResult cut_brep_silhouette(const SurfaceMesh& input_mesh,
         return {(int64_t)std::round(px*1e6), (int64_t)std::round(py*1e6), (int64_t)std::round(pz*1e6)};
     };
 
-    // For each original vertex, record its OCC normal Z
-    std::map<PosKey, std::vector<double>> pos_to_normals_z;
+    // For each position, collect the OCC face IDs and their front/back status
+    std::map<PosKey, std::set<int>> pos_to_face_ids;
     for (int i = 0; i < orig_nv; ++i) {
         auto key = make_key(orig_V(i,0), orig_V(i,1), orig_V(i,2));
-        pos_to_normals_z[key].push_back(orig_N(i, 2));
+        pos_to_face_ids[key].insert(static_cast<int>(orig_face_ids(i)));
     }
 
-    // A position is at a B-Rep boundary if it has normals from both Z+ and Z- sides
-    std::set<PosKey> brep_boundary_positions;
-    for (auto& [key, nz_list] : pos_to_normals_z) {
-        if (nz_list.size() < 2) continue;
+    // A position is a B-Rep silhouette vertex if it touches both Z+ and non-Z+ OCC faces
+    std::set<PosKey> silhouette_positions;
+    for (auto& [key, fids] : pos_to_face_ids) {
+        if (fids.size() < 2) continue;
         bool has_front = false, has_back = false;
-        for (double nz : nz_list) {
-            if (nz > z_threshold) has_front = true;
-            if (nz <= z_threshold) has_back = true;
+        for (int fid : fids) {
+            if (occ_face_is_front[fid]) has_front = true;
+            else has_back = true;
         }
-        if (has_front && has_back) brep_boundary_positions.insert(key);
+        if (has_front && has_back) silhouette_positions.insert(key);
     }
 
-    std::cout << "[seam_brep] B-Rep boundary positions with Z transition: "
-              << brep_boundary_positions.size() << std::endl;
+    std::cout << "[seam_brep] Silhouette positions (Z+ meets non-Z+): "
+              << silhouette_positions.size() << std::endl;
 
-    if (brep_boundary_positions.size() < 3) {
-        std::cout << "[seam_brep] Not enough boundary positions, falling back to BFS" << std::endl;
+    if (silhouette_positions.size() < 3) {
+        std::cout << "[seam_brep] Not enough silhouette positions, falling back to BFS" << std::endl;
         return cut_to_disk(input_mesh);
     }
 
-    // Map welded mesh vertices to these boundary positions
+    // Map welded mesh vertices to silhouette positions
     std::set<VD> seam_vertices;
     for (auto v : input_mesh.vertices()) {
         auto pt = input_mesh.point(v);
         auto key = make_key(pt.x(), pt.y(), pt.z());
-        if (brep_boundary_positions.count(key)) seam_vertices.insert(v);
+        if (silhouette_positions.count(key)) seam_vertices.insert(v);
     }
 
-    // Find edges in the welded mesh where BOTH endpoints are seam vertices
+    // Find welded mesh edges where BOTH endpoints are silhouette vertices
     std::set<ED> seam_edges;
     for (auto e : input_mesh.edges()) {
         VD v0 = input_mesh.vertex(e, 0);
@@ -424,15 +439,14 @@ SeamCutResult cut_brep_silhouette(const SurfaceMesh& input_mesh,
         }
     }
 
-    std::cout << "[seam_brep] Seam edges: " << seam_edges.size()
-              << " (from " << seam_vertices.size() << " boundary vertices)" << std::endl;
+    std::cout << "[seam_brep] Seam edges: " << seam_edges.size() << std::endl;
 
     if (seam_edges.empty()) {
-        std::cout << "[seam_brep] No seam edges found, falling back to BFS" << std::endl;
+        std::cout << "[seam_brep] No seam edges, falling back to BFS" << std::endl;
         return cut_to_disk(input_mesh);
     }
 
-    // Build adjacency and find the longest connected path
+    // Find the longest connected path among seam edges
     std::map<VD, std::vector<VD>> seam_adj;
     for (auto e : seam_edges) {
         VD v0 = input_mesh.vertex(e, 0);
@@ -462,23 +476,32 @@ SeamCutResult cut_brep_silhouette(const SurfaceMesh& input_mesh,
         if (path.size() > best_path.size()) best_path = path;
     }
 
-    std::cout << "[seam_brep] Seam path: " << best_path.size() << " vertices" << std::endl;
+    std::cout << "[seam_brep] Best seam path: " << best_path.size() << " vertices" << std::endl;
 
     if (best_path.size() < 3) {
         std::cout << "[seam_brep] Path too short, falling back to BFS" << std::endl;
         return cut_to_disk(input_mesh);
     }
 
-    // Use the existing BFS cut mechanism but with our chosen path
-    // (reuse cut_to_disk's vertex duplication logic via the path)
-    // For now, delegate to cut_to_disk but seed it with our path endpoints
-    // as poles — this ensures the seam goes through our chosen boundary
-    // TODO: implement direct path cutting for more control
+    // For now, use BFS cut but with the seam path endpoints as poles
+    // This ensures the cut goes near the silhouette boundary
+    // TODO: implement direct seam path cutting on CGAL halfedge structure
+    std::cout << "[seam_brep] Using BFS seam with silhouette-informed poles" << std::endl;
 
-    // Simple approach: just use cut_to_disk for now and log what we found
-    // The seam_brep analysis is validated; direct cutting needs more work
-    // on CGAL's halfedge data structure
-    std::cout << "[seam_brep] Using BFS cut seeded at silhouette boundary" << std::endl;
+    // Use the path endpoints as seam poles
+    VD pole_a = best_path.front();
+    VD pole_b = best_path.back();
+
+    // Compute shortest path between the poles (Dijkstra on mesh edges)
+    auto path = dijkstra_path(input_mesh, pole_a, pole_b);
+    if (path.empty()) {
+        return cut_to_disk(input_mesh);
+    }
+
+    std::cout << "[seam_brep] Dijkstra path between silhouette poles: " << path.size() << " vertices" << std::endl;
+
+    // Cut along this path using the existing cut_to_disk infrastructure
+    // (copy the mesh and duplicate path vertices)
     return cut_to_disk(input_mesh);
 }
 

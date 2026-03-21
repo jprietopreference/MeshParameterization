@@ -6,6 +6,7 @@
 #include "meshparam/gltf_io.h"
 #include "meshparam/parameterizer.h"
 #include "meshparam/distortion.h"
+#include <tiny_gltf.h>
 
 #include "cgalparam/gltf_io.h"
 #include "cgalparam/cgal_parameterize.h"
@@ -269,8 +270,37 @@ MethodResult run_cgal(const std::vector<uint8_t>& input_glb, cgalparam::ParamMet
         if (CGAL::is_closed(sm)) {
             if (use_silhouette_seam && !orig_glb_for_seam.empty()) {
                 auto orig = meshparam::load_gltf_from_memory(orig_glb_for_seam);
-                auto cut = cgalparam::cut_brep_silhouette(sm, orig.V, orig.N, orig.F);
-                sm = cut.cut_mesh;
+                // Try to read _FACE_ID from original GLB
+                Eigen::VectorXd face_ids;
+                // Parse face IDs from GLB manually (not in TriMesh)
+                {
+                    tinygltf::Model model;
+                    tinygltf::TinyGLTF loader;
+                    std::string err, warn;
+                    loader.LoadBinaryFromMemory(&model, &err, &warn,
+                        orig_glb_for_seam.data(), static_cast<unsigned>(orig_glb_for_seam.size()));
+                    if (!model.meshes.empty()) {
+                        auto& prim = model.meshes[0].primitives[0];
+                        auto it = prim.attributes.find("_FACE_ID");
+                        if (it != prim.attributes.end()) {
+                            auto& acc = model.accessors[it->second];
+                            auto& bv = model.bufferViews[acc.bufferView];
+                            auto& buf = model.buffers[bv.buffer];
+                            const float* data = reinterpret_cast<const float*>(
+                                buf.data.data() + bv.byteOffset + acc.byteOffset);
+                            face_ids.resize(acc.count);
+                            for (int i = 0; i < (int)acc.count; ++i) face_ids(i) = data[i];
+                        }
+                    }
+                }
+                if (face_ids.size() > 0) {
+                    auto cut = cgalparam::cut_brep_silhouette(sm, orig.V, orig.N, orig.F, face_ids);
+                    sm = cut.cut_mesh;
+                } else {
+                    std::cout << "[broker] No _FACE_ID in input, using BFS seam" << std::endl;
+                    auto cut = cgalparam::cut_to_disk(sm);
+                    sm = cut.cut_mesh;
+                }
             } else {
                 auto cut = cgalparam::cut_to_disk(sm);
                 sm = cut.cut_mesh;

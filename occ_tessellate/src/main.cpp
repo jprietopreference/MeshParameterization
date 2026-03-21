@@ -79,7 +79,9 @@ int main(int argc, char* argv[]) {
     // and smooth within each face (analytical surface normals from B-Rep).
     std::vector<float> all_verts;
     std::vector<float> all_normals;
+    std::vector<float> all_face_ids; // per-vertex OCC face ID (stored as float for glTF compat)
     std::vector<uint32_t> all_tris;
+    int occ_face_idx = 0;
 
     for (TopExp_Explorer exp(shape, TopAbs_FACE); exp.More(); exp.Next()) {
         TopoDS_Face face = TopoDS::Face(exp.Current());
@@ -103,6 +105,8 @@ int main(int argc, char* argv[]) {
             all_verts.push_back(static_cast<float>(pt.X() * scale));
             all_verts.push_back(static_cast<float>(pt.Y() * scale));
             all_verts.push_back(static_cast<float>(pt.Z() * scale));
+
+            all_face_ids.push_back(static_cast<float>(occ_face_idx));
 
             if (tri->HasNormals()) {
                 gp_Dir nrm = tri->Normal(i);
@@ -128,7 +132,10 @@ int main(int argc, char* argv[]) {
             all_tris.push_back(base + n2 - 1);
             all_tris.push_back(base + n3 - 1);
         }
+        occ_face_idx++;
     }
+
+    std::cout << "OCC faces: " << occ_face_idx << std::endl;
 
     int nv = static_cast<int>(all_verts.size() / 3);
     int nf = static_cast<int>(all_tris.size() / 3);
@@ -154,6 +161,12 @@ int main(int argc, char* argv[]) {
     buffer_data.resize(nrm_offset + nrm_size);
     std::memcpy(buffer_data.data() + nrm_offset, all_normals.data(), nrm_size);
 
+    // Face IDs (per-vertex, scalar float)
+    size_t fid_offset = buffer_data.size();
+    size_t fid_size = nv * sizeof(float);
+    buffer_data.resize(fid_offset + fid_size);
+    std::memcpy(buffer_data.data() + fid_offset, all_face_ids.data(), fid_size);
+
     // Indices
     size_t idx_offset = buffer_data.size();
     size_t idx_size = nf * 3 * sizeof(uint32_t);
@@ -176,7 +189,13 @@ int main(int argc, char* argv[]) {
     nrm_bv.byteLength = nrm_size; nrm_bv.target = TINYGLTF_TARGET_ARRAY_BUFFER;
     model.bufferViews.push_back(nrm_bv);
 
-    // BV 2: indices
+    // BV 2: face IDs
+    tinygltf::BufferView fid_bv;
+    fid_bv.buffer = 0; fid_bv.byteOffset = fid_offset;
+    fid_bv.byteLength = fid_size; fid_bv.target = TINYGLTF_TARGET_ARRAY_BUFFER;
+    model.bufferViews.push_back(fid_bv);
+
+    // BV 3: indices
     tinygltf::BufferView idx_bv;
     idx_bv.buffer = 0; idx_bv.byteOffset = idx_offset;
     idx_bv.byteLength = idx_size; idx_bv.target = TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER;
@@ -205,16 +224,23 @@ int main(int argc, char* argv[]) {
     nrm_acc.count = nv; nrm_acc.type = TINYGLTF_TYPE_VEC3;
     model.accessors.push_back(nrm_acc);
 
-    // Accessor 2: indices
+    // Accessor 2: face IDs
+    tinygltf::Accessor fid_acc;
+    fid_acc.bufferView = 2; fid_acc.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+    fid_acc.count = nv; fid_acc.type = TINYGLTF_TYPE_SCALAR;
+    model.accessors.push_back(fid_acc);
+
+    // Accessor 3: indices
     tinygltf::Accessor idx_acc;
-    idx_acc.bufferView = 2; idx_acc.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT;
+    idx_acc.bufferView = 3; idx_acc.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT;
     idx_acc.count = nf * 3; idx_acc.type = TINYGLTF_TYPE_SCALAR;
     model.accessors.push_back(idx_acc);
 
     tinygltf::Primitive prim;
     prim.attributes["POSITION"] = 0;
     prim.attributes["NORMAL"] = 1;
-    prim.indices = 2;
+    prim.attributes["_FACE_ID"] = 2;
+    prim.indices = 3;
     prim.mode = TINYGLTF_MODE_TRIANGLES;
 
     tinygltf::Mesh gm;

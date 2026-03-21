@@ -28,23 +28,22 @@ struct SeamCutResult {
 /// If the mesh already has a boundary, returns it unchanged.
 SeamCutResult cut_to_disk(const SurfaceMesh& mesh);
 
-/// Cut along B-Rep face boundaries where one side faces +Z and the other
-/// faces away (Z- or perpendicular). Only cuts at actual B-Rep edges, not
-/// through the middle of a smooth surface like a sphere.
-///
-/// Requires the original split-vertex mesh to identify B-Rep boundaries
-/// (positions where normals differ = different OCC faces meeting).
+/// Cut along B-Rep face boundaries where one OCC face is Z+ (front) and
+/// the adjacent OCC face is not Z+ (perpendicular or Z-). Uses per-vertex
+/// OCC face IDs from the tessellator (_FACE_ID attribute).
 ///
 /// @param mesh  Closed surface mesh (welded for parameterization)
 /// @param orig_V  Original split-vertex positions (n_orig x 3)
 /// @param orig_N  Original split-vertex normals (n_orig x 3)
 /// @param orig_F  Original split-vertex faces (m x 3)
-/// @param z_threshold  Z-component threshold for "front" face (default 0.1)
+/// @param orig_face_ids  Per-vertex OCC face ID (n_orig x 1)
+/// @param z_threshold  Z-component threshold for "front" OCC face (default 0.3)
 /// @returns Cut mesh, or fallback to BFS if no suitable boundary found
 SeamCutResult cut_brep_silhouette(const SurfaceMesh& mesh,
                                    const Eigen::MatrixXd& orig_V,
                                    const Eigen::MatrixXd& orig_N,
                                    const Eigen::MatrixXi& orig_F,
-                                   double z_threshold = 0.1);
+                                   const Eigen::VectorXd& orig_face_ids,
+                                   double z_threshold = 0.3);
 
 } // namespace cgalparam
