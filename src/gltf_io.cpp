@@ -152,6 +152,30 @@ TriMesh parse_model(const tinygltf::Model& model) {
         }
     }
 
+    // Read _FACE_ID if present
+    auto fid_it = primitive.attributes.find("_FACE_ID");
+    if (fid_it != primitive.attributes.end()) {
+        const auto& fid_acc = model.accessors[fid_it->second];
+        result.face_ids.resize(n);
+        const auto& fid_bv = model.bufferViews[fid_acc.bufferView];
+        const auto& fid_buf = model.buffers[fid_bv.buffer];
+        const float* fid_base = reinterpret_cast<const float*>(
+            fid_buf.data.data() + fid_bv.byteOffset + fid_acc.byteOffset);
+        for (int i = 0; i < n; ++i) result.face_ids(i) = fid_base[i];
+    }
+
+    // Read _SEAM if present
+    auto seam_it = primitive.attributes.find("_SEAM");
+    if (seam_it != primitive.attributes.end()) {
+        const auto& seam_acc = model.accessors[seam_it->second];
+        result.seam.resize(n);
+        const auto& seam_bv = model.bufferViews[seam_acc.bufferView];
+        const auto& seam_buf = model.buffers[seam_bv.buffer];
+        const float* seam_base = reinterpret_cast<const float*>(
+            seam_buf.data.data() + seam_bv.byteOffset + seam_acc.byteOffset);
+        for (int i = 0; i < n; ++i) result.seam(i) = seam_base[i];
+    }
+
     return result;
 }
 
@@ -245,6 +269,30 @@ std::vector<uint8_t> save_gltf_to_memory(const TriMesh& mesh) {
         }
     }
 
+    // Seam flags: n * float (optional)
+    size_t seam_offset = buffer_data.size();
+    size_t seam_size = 0;
+    if (mesh.has_seam()) {
+        seam_size = n * sizeof(float);
+        buffer_data.resize(seam_offset + seam_size);
+        for (int i = 0; i < n; ++i) {
+            float s = (float)mesh.seam(i);
+            std::memcpy(buffer_data.data() + seam_offset + i * sizeof(float), &s, sizeof(float));
+        }
+    }
+
+    // Face IDs: n * float (optional)
+    size_t fid_offset = buffer_data.size();
+    size_t fid_size = 0;
+    if (mesh.has_face_ids()) {
+        fid_size = n * sizeof(float);
+        buffer_data.resize(fid_offset + fid_size);
+        for (int i = 0; i < n; ++i) {
+            float f = (float)mesh.face_ids(i);
+            std::memcpy(buffer_data.data() + fid_offset + i * sizeof(float), &f, sizeof(float));
+        }
+    }
+
     // Indices: m * 3 * uint32
     size_t idx_offset = buffer_data.size();
     size_t idx_size = m * 3 * sizeof(uint32_t);
@@ -285,6 +333,24 @@ std::vector<uint8_t> save_gltf_to_memory(const TriMesh& mesh) {
         uv_bv.target = TINYGLTF_TARGET_ARRAY_BUFFER;
         uv_bv_idx = static_cast<int>(model.bufferViews.size());
         model.bufferViews.push_back(uv_bv);
+    }
+
+    int seam_bv_idx = -1;
+    if (mesh.has_seam()) {
+        tinygltf::BufferView seam_bv;
+        seam_bv.buffer = 0; seam_bv.byteOffset = seam_offset;
+        seam_bv.byteLength = seam_size; seam_bv.target = TINYGLTF_TARGET_ARRAY_BUFFER;
+        seam_bv_idx = static_cast<int>(model.bufferViews.size());
+        model.bufferViews.push_back(seam_bv);
+    }
+
+    int fid_bv_idx = -1;
+    if (mesh.has_face_ids()) {
+        tinygltf::BufferView fid_bv;
+        fid_bv.buffer = 0; fid_bv.byteOffset = fid_offset;
+        fid_bv.byteLength = fid_size; fid_bv.target = TINYGLTF_TARGET_ARRAY_BUFFER;
+        fid_bv_idx = static_cast<int>(model.bufferViews.size());
+        model.bufferViews.push_back(fid_bv);
     }
 
     tinygltf::BufferView idx_bv;
@@ -328,6 +394,26 @@ std::vector<uint8_t> save_gltf_to_memory(const TriMesh& mesh) {
         model.accessors.push_back(uv_acc);
     }
 
+    int seam_acc_idx = -1;
+    if (mesh.has_seam()) {
+        tinygltf::Accessor seam_acc;
+        seam_acc.bufferView = seam_bv_idx; seam_acc.byteOffset = 0;
+        seam_acc.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+        seam_acc.count = n; seam_acc.type = TINYGLTF_TYPE_SCALAR;
+        seam_acc_idx = static_cast<int>(model.accessors.size());
+        model.accessors.push_back(seam_acc);
+    }
+
+    int fid_acc_idx = -1;
+    if (mesh.has_face_ids()) {
+        tinygltf::Accessor fid_acc;
+        fid_acc.bufferView = fid_bv_idx; fid_acc.byteOffset = 0;
+        fid_acc.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+        fid_acc.count = n; fid_acc.type = TINYGLTF_TYPE_SCALAR;
+        fid_acc_idx = static_cast<int>(model.accessors.size());
+        model.accessors.push_back(fid_acc);
+    }
+
     tinygltf::Accessor idx_acc;
     idx_acc.bufferView = idx_bv_idx;
     idx_acc.byteOffset = 0;
@@ -341,9 +427,9 @@ std::vector<uint8_t> save_gltf_to_memory(const TriMesh& mesh) {
     tinygltf::Primitive prim;
     prim.attributes["POSITION"] = 0;
     prim.attributes["NORMAL"] = nrm_acc_idx;
-    if (uv_acc_idx >= 0) {
-        prim.attributes["TEXCOORD_0"] = uv_acc_idx;
-    }
+    if (uv_acc_idx >= 0) prim.attributes["TEXCOORD_0"] = uv_acc_idx;
+    if (seam_acc_idx >= 0) prim.attributes["_SEAM"] = seam_acc_idx;
+    if (fid_acc_idx >= 0) prim.attributes["_FACE_ID"] = fid_acc_idx;
     prim.indices = idx_acc_idx;
     prim.mode = TINYGLTF_MODE_TRIANGLES;
 

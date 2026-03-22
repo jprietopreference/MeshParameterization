@@ -446,10 +446,39 @@ MethodResult run_cgal(const std::vector<uint8_t>& input_glb, cgalparam::ParamMet
 
         auto metrics = cgalparam::compute_distortion(result.V, result.F, result.UV);
 
-        // Convert to meshparam::TriMesh to get normals in the output
+        // Convert to meshparam::TriMesh to get normals + seam tags
         meshparam::TriMesh out;
         out.V = result.V; out.F = result.F; out.UV = result.UV;
         out.compute_normals();
+
+        // Tag seam vertices by detecting UV discontinuity at shared positions.
+        // Two vertices at the same 3D position but different UVs = seam.
+        {
+            int nv = out.num_vertices();
+            out.seam = Eigen::VectorXd::Zero(nv);
+            std::unordered_map<int64_t, std::vector<int>> pos_groups;
+            for (int i = 0; i < nv; ++i) {
+                int64_t key = (int64_t(std::round(out.V(i,0)*1e4)) * 100000007LL +
+                               int64_t(std::round(out.V(i,1)*1e4))) * 100000007LL +
+                               int64_t(std::round(out.V(i,2)*1e4));
+                pos_groups[key].push_back(i);
+            }
+            for (auto& [key, group] : pos_groups) {
+                if (group.size() < 2) continue;
+                // Check if any pair has different UVs
+                for (size_t a = 0; a < group.size(); ++a) {
+                    for (size_t b = a+1; b < group.size(); ++b) {
+                        double du = std::abs(out.UV(group[a],0) - out.UV(group[b],0));
+                        double dv = std::abs(out.UV(group[a],1) - out.UV(group[b],1));
+                        if (du > 0.001 || dv > 0.001) {
+                            for (int idx : group) out.seam(idx) = 1.0;
+                            goto next_group;
+                        }
+                    }
+                }
+                next_group:;
+            }
+        }
         r.glb = meshparam::save_gltf_to_memory(out);
         r.success = true;
         r.vertices = result.num_vertices();
@@ -857,8 +886,9 @@ int main(int argc, char* argv[]) {
                     pos_to_welded[key] = i;
                 }
 
-                // Map UVs from welded → original split vertices
+                // Map UVs + seam from welded → original split vertices
                 orig.UV.resize(orig.num_vertices(), 2);
+                if (param.has_seam()) orig.seam.resize(orig.num_vertices());
                 int mapped = 0;
                 for (int i = 0; i < orig.num_vertices(); ++i) {
                     std::array<int64_t,3> key = {
@@ -869,11 +899,13 @@ int main(int argc, char* argv[]) {
                     auto it = pos_to_welded.find(key);
                     if (it != pos_to_welded.end()) {
                         orig.UV.row(i) = param.UV.row(it->second);
+                        if (param.has_seam()) orig.seam(i) = param.seam(it->second);
                         mapped++;
                     }
                 }
+                // face_ids already on orig from the OCC/ACIS tessellator
                 std::cout << "  [broker] Mapped UVs to " << mapped << "/" << orig.num_vertices()
-                          << " split vertices (normals preserved)" << std::endl;
+                          << " split vertices (normals + face_ids + seam preserved)" << std::endl;
                 best.glb = meshparam::save_gltf_to_memory(orig);
                 best.vertices = orig.num_vertices();
                 best.faces = orig.num_faces();

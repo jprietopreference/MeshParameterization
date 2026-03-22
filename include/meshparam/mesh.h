@@ -20,11 +20,17 @@ struct TriMesh {
     Eigen::MatrixXd UV;
     /// Optional: per-vertex normals (n x 3)
     Eigen::MatrixXd N;
+    /// Optional: per-vertex seam flag (n x 1, 0.0 or 1.0)
+    Eigen::VectorXd seam;
+    /// Optional: per-vertex B-Rep face ID (n x 1)
+    Eigen::VectorXd face_ids;
 
     int num_vertices() const { return static_cast<int>(V.rows()); }
     int num_faces() const { return static_cast<int>(F.rows()); }
     bool has_uvs() const { return UV.rows() == V.rows(); }
     bool has_normals() const { return N.rows() == V.rows(); }
+    bool has_seam() const { return seam.rows() == V.rows(); }
+    bool has_face_ids() const { return face_ids.rows() == V.rows(); }
 
     /// Compute per-vertex normals (area-weighted average of face normals)
     void compute_normals();

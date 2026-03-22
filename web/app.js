@@ -323,63 +323,107 @@ async function loadMethodResult(session, methodName) {
     }
 }
 
-// --- Seam visualization ---
-function showSeamLines(mesh) {
-    scene.meshes.filter(m => m.name === '_seam_lines').forEach(m => m.dispose());
-
-    if (!mesh || !mesh.isVerticesDataPresent(BABYLON.VertexBuffer.UVKind)) return;
+// --- Edge visualization from GLB attributes ---
+function showEdgeOverlay(mesh, attrName, color, overlayName) {
+    scene.meshes.filter(m => m.name === overlayName).forEach(m => m.dispose());
+    if (!mesh) return;
 
     const positions = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
-    const uvs = mesh.getVerticesData(BABYLON.VertexBuffer.UVKind);
     const indices = mesh.getIndices();
-    if (!positions || !uvs || !indices) return;
+    const attrData = mesh.getVerticesData(attrName);
+    if (!positions || !indices) return;
 
-    // For split-vertex meshes, match edges by POSITION (quantized), not vertex index.
-    // Two triangles share a geometric edge if they have two vertices at the same positions.
-    const q = (v) => Math.round(v * 1e4); // quantize to 0.1mm
-    const posKey = (i) => `${q(positions[i*3])}_${q(positions[i*3+1])}_${q(positions[i*3+2])}`;
+    const linePoints = [];
 
-    // Build: geometric edge (posKeyA_posKeyB) → list of {uvA, uvB, posA, posB}
-    const edgeMap = new Map();
-    for (let t = 0; t < indices.length; t += 3) {
-        for (let e = 0; e < 3; e++) {
-            const a = indices[t + e], b = indices[t + (e + 1) % 3];
-            const ka = posKey(a), kb = posKey(b);
-            const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-            if (!edgeMap.has(key)) edgeMap.set(key, []);
-            const uA = ka < kb ? [uvs[a*2], uvs[a*2+1]] : [uvs[b*2], uvs[b*2+1]];
-            const uB = ka < kb ? [uvs[b*2], uvs[b*2+1]] : [uvs[a*2], uvs[a*2+1]];
-            edgeMap.get(key).push({ uA, uB, a, b });
+    if (attrData) {
+        // Use attribute: draw edges where both endpoints have attr > 0.5
+        for (let t = 0; t < indices.length; t += 3) {
+            for (let e = 0; e < 3; e++) {
+                const a = indices[t + e], b = indices[t + (e + 1) % 3];
+                if (attrData[a] > 0.5 && attrData[b] > 0.5) {
+                    linePoints.push(
+                        new BABYLON.Vector3(positions[a*3], positions[a*3+1], positions[a*3+2]),
+                        new BABYLON.Vector3(positions[b*3], positions[b*3+1], positions[b*3+2]),
+                    );
+                }
+            }
+        }
+    } else if (attrName === '_FACE_ID') {
+        // Fallback: detect face edges from position-based edge matching
+        const q = v => Math.round(v * 1e4);
+        const pk = i => `${q(positions[i*3])}_${q(positions[i*3+1])}_${q(positions[i*3+2])}`;
+        const edgeMap = new Map();
+        for (let t = 0; t < indices.length; t += 3) {
+            for (let e = 0; e < 3; e++) {
+                const a = indices[t + e], b = indices[t + (e + 1) % 3];
+                const ka = pk(a), kb = pk(b);
+                const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+                if (!edgeMap.has(key)) edgeMap.set(key, 0);
+                edgeMap.set(key, edgeMap.get(key) + 1);
+            }
+        }
+        // Edges appearing only once = face boundary (split vertices)
+        for (let t = 0; t < indices.length; t += 3) {
+            for (let e = 0; e < 3; e++) {
+                const a = indices[t + e], b = indices[t + (e + 1) % 3];
+                const ka = pk(a), kb = pk(b);
+                const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+                if (edgeMap.get(key) === 1) {
+                    linePoints.push(
+                        new BABYLON.Vector3(positions[a*3], positions[a*3+1], positions[a*3+2]),
+                        new BABYLON.Vector3(positions[b*3], positions[b*3+1], positions[b*3+2]),
+                    );
+                }
+            }
+        }
+    } else if (attrName === '_SEAM') {
+        // Fallback: detect seams from UV discontinuity (position-based)
+        const uvs = mesh.getVerticesData(BABYLON.VertexBuffer.UVKind);
+        if (!uvs) return;
+        const q = v => Math.round(v * 1e4);
+        const pk = i => `${q(positions[i*3])}_${q(positions[i*3+1])}_${q(positions[i*3+2])}`;
+        const edgeMap = new Map();
+        for (let t = 0; t < indices.length; t += 3) {
+            for (let e = 0; e < 3; e++) {
+                const a = indices[t + e], b = indices[t + (e + 1) % 3];
+                const ka = pk(a), kb = pk(b);
+                const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+                const uA = ka < kb ? [uvs[a*2],uvs[a*2+1]] : [uvs[b*2],uvs[b*2+1]];
+                const uB = ka < kb ? [uvs[b*2],uvs[b*2+1]] : [uvs[a*2],uvs[a*2+1]];
+                if (!edgeMap.has(key)) edgeMap.set(key, []);
+                edgeMap.get(key).push({uA, uB, a, b});
+            }
+        }
+        for (const [, entries] of edgeMap) {
+            if (entries.length < 2) continue;
+            const d0 = Math.abs(entries[0].uA[0]-entries[1].uA[0]) + Math.abs(entries[0].uA[1]-entries[1].uA[1]);
+            const d1 = Math.abs(entries[0].uB[0]-entries[1].uB[0]) + Math.abs(entries[0].uB[1]-entries[1].uB[1]);
+            if (d0 > 0.001 || d1 > 0.001) {
+                const {a, b} = entries[0];
+                linePoints.push(
+                    new BABYLON.Vector3(positions[a*3], positions[a*3+1], positions[a*3+2]),
+                    new BABYLON.Vector3(positions[b*3], positions[b*3+1], positions[b*3+2]),
+                );
+            }
         }
     }
 
-    // Seam = geometric edge where UVs differ between the two sides.
-    // NOT boundary edges (split vertices always create index-level boundaries).
-    const seamPoints = [];
-    for (const [key, entries] of edgeMap) {
-        if (entries.length < 2) continue; // skip true boundary edges (not seams)
-
-        // Compare UVs from first two entries
-        const e0 = entries[0], e1 = entries[1];
-        const dA = Math.abs(e0.uA[0] - e1.uA[0]) + Math.abs(e0.uA[1] - e1.uA[1]);
-        const dB = Math.abs(e0.uB[0] - e1.uB[0]) + Math.abs(e0.uB[1] - e1.uB[1]);
-        if (dA > 0.001 || dB > 0.001) {
-            const a = e0.a, b = e0.b;
-            seamPoints.push(
-                new BABYLON.Vector3(positions[a*3], positions[a*3+1], positions[a*3+2]),
-                new BABYLON.Vector3(positions[b*3], positions[b*3+1], positions[b*3+2]),
-            );
-        }
-    }
-
-    if (seamPoints.length > 0) {
-        const lines = BABYLON.MeshBuilder.CreateLineSystem('_seam_lines', {
-            lines: Array.from({length: seamPoints.length / 2}, (_, i) =>
-                [seamPoints[i * 2], seamPoints[i * 2 + 1]]),
+    if (linePoints.length > 0) {
+        const lines = BABYLON.MeshBuilder.CreateLineSystem(overlayName, {
+            lines: Array.from({length: linePoints.length / 2}, (_, i) =>
+                [linePoints[i * 2], linePoints[i * 2 + 1]]),
         }, scene);
-        lines.color = new BABYLON.Color3(0.3, 0.7, 1.0); // light blue
+        lines.color = color;
         lines.isPickable = false;
     }
+}
+
+function showSeamLines(mesh) {
+    showEdgeOverlay(mesh, '_SEAM', new BABYLON.Color3(0.3, 0.7, 1.0), '_seam_lines');
+}
+
+function showFaceEdges(mesh) {
+    showEdgeOverlay(mesh, '_FACE_ID', new BABYLON.Color3(1.0, 0.6, 0.2), '_face_edges');
 }
 
 // --- Display options ---
@@ -413,10 +457,22 @@ $('showWireframe').addEventListener('change', () => {
 });
 
 $('showSeams')?.addEventListener('change', () => {
-    if ($('showSeams').checked && currentMesh) {
-        showSeamLines(currentMesh);
+    if ($('showSeams').checked) {
+        $('showFaceEdges').checked = false;
+        scene?.meshes.filter(m => m.name === '_face_edges').forEach(m => m.dispose());
+        if (currentMesh) showSeamLines(currentMesh);
     } else {
         scene?.meshes.filter(m => m.name === '_seam_lines').forEach(m => m.dispose());
+    }
+});
+
+$('showFaceEdges')?.addEventListener('change', () => {
+    if ($('showFaceEdges').checked) {
+        $('showSeams').checked = false;
+        scene?.meshes.filter(m => m.name === '_seam_lines').forEach(m => m.dispose());
+        if (currentMesh) showFaceEdges(currentMesh);
+    } else {
+        scene?.meshes.filter(m => m.name === '_face_edges').forEach(m => m.dispose());
     }
 });
 
