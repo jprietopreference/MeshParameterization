@@ -157,11 +157,11 @@ target_include_directories(meshparam_server PRIVATE
 
 target_link_libraries(meshparam_server PRIVATE meshparam_lib cgalparam_lib)
 
-if(draco_FOUND)
-    target_link_libraries(meshparam_server PRIVATE draco::draco)
-    target_compile_definitions(meshparam_server PRIVATE HAS_DRACO=1)
-    message(STATUS "Draco compression enabled")
-endif()
+# Draco disabled — BabylonJS doesn't expose custom GENERIC attributes from Draco
+# if(draco_FOUND)
+#     target_link_libraries(meshparam_server PRIVATE draco::draco)
+#     target_compile_definitions(meshparam_server PRIVATE HAS_DRACO=1)
+# endif()
 
 if(MSVC)
     target_compile_definitions(meshparam_server PRIVATE _USE_MATH_DEFINES NOMINMAX)

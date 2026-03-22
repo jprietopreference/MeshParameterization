@@ -591,29 +591,9 @@ std::vector<uint8_t> draco_compress_glb(const std::vector<uint8_t>& glb_data) {
         }
     }
 
-    // Add seam attribute if available
-    int seam_att_id = -1;
-    if (mesh.has_seam()) {
-        draco::GeometryAttribute seam_att;
-        seam_att.Init(draco::GeometryAttribute::GENERIC, nullptr, 1, draco::DT_FLOAT32, false, sizeof(float), 0);
-        seam_att_id = draco_mesh.AddAttribute(seam_att, true, nv);
-        for (int i = 0; i < nv; ++i) {
-            float s = (float)mesh.seam(i);
-            draco_mesh.attribute(seam_att_id)->SetAttributeValue(draco::AttributeValueIndex(i), &s);
-        }
-    }
-
-    // Add face ID attribute if available
-    int fid_att_id = -1;
-    if (mesh.has_face_ids()) {
-        draco::GeometryAttribute fid_att;
-        fid_att.Init(draco::GeometryAttribute::GENERIC, nullptr, 1, draco::DT_FLOAT32, false, sizeof(float), 0);
-        fid_att_id = draco_mesh.AddAttribute(fid_att, true, nv);
-        for (int i = 0; i < nv; ++i) {
-            float f = (float)mesh.face_ids(i);
-            draco_mesh.attribute(fid_att_id)->SetAttributeValue(draco::AttributeValueIndex(i), &f);
-        }
-    }
+    // Custom attributes (_SEAM, _FACE_ID) are NOT Draco-encoded.
+    // BabylonJS Draco decoder doesn't expose GENERIC attributes.
+    // They'll be added as separate uncompressed bufferViews in the GLB.
 
     // Set faces
     for (int i = 0; i < nf; ++i) {
@@ -630,11 +610,6 @@ std::vector<uint8_t> draco_compress_glb(const std::vector<uint8_t>& glb_data) {
     encoder.SetAttributeQuantization(draco::GeometryAttribute::POSITION, 14);
     encoder.SetAttributeQuantization(draco::GeometryAttribute::NORMAL, 10);
     encoder.SetAttributeQuantization(draco::GeometryAttribute::TEX_COORD, 12);
-    // GENERIC attributes (seam, face_id) — low precision is fine
-    if (seam_att_id >= 0)
-        encoder.SetAttributeQuantization(seam_att_id, 1); // just 0 or 1
-    if (fid_att_id >= 0)
-        encoder.SetAttributeQuantization(fid_att_id, 8); // up to 256 faces
 
     draco::EncoderBuffer buffer;
     auto status = encoder.EncodeMeshToBuffer(draco_mesh, &buffer);
@@ -653,15 +628,41 @@ std::vector<uint8_t> draco_compress_glb(const std::vector<uint8_t>& glb_data) {
     std::string json_str;
     {
         std::ostringstream js;
-        // Build accessor list and attribute map dynamically
-        int acc_idx = 0;
-        struct AttrDef { std::string name; int draco_id; std::string type; bool has_minmax; };
-        std::vector<AttrDef> attrs;
-        attrs.push_back({"POSITION", pos_att_id, "VEC3", true});
-        if (nrm_att_id >= 0) attrs.push_back({"NORMAL", nrm_att_id, "VEC3", false});
-        if (uv_att_id >= 0) attrs.push_back({"TEXCOORD_0", uv_att_id, "VEC2", false});
-        if (seam_att_id >= 0) attrs.push_back({"_SEAM", seam_att_id, "SCALAR", false});
-        if (fid_att_id >= 0) attrs.push_back({"_FACE_ID", fid_att_id, "SCALAR", false});
+        // Build custom attribute buffers (uncompressed, after Draco buffer)
+        std::vector<uint8_t> custom_buf;
+        size_t seam_bv_offset = 0, seam_bv_size = 0;
+        size_t fid_bv_offset = 0, fid_bv_size = 0;
+        bool has_seam = mesh.has_seam();
+        bool has_fid = mesh.has_face_ids();
+
+        if (has_seam) {
+            seam_bv_offset = custom_buf.size();
+            seam_bv_size = nv * sizeof(float);
+            custom_buf.resize(seam_bv_offset + seam_bv_size);
+            for (int i = 0; i < nv; ++i) {
+                float s = (float)mesh.seam(i);
+                memcpy(custom_buf.data() + seam_bv_offset + i * 4, &s, 4);
+            }
+        }
+        if (has_fid) {
+            fid_bv_offset = custom_buf.size();
+            fid_bv_size = nv * sizeof(float);
+            custom_buf.resize(fid_bv_offset + fid_bv_size);
+            for (int i = 0; i < nv; ++i) {
+                float f = (float)mesh.face_ids(i);
+                memcpy(custom_buf.data() + fid_bv_offset + i * 4, &f, 4);
+            }
+        }
+        while (custom_buf.size() % 4) custom_buf.push_back(0);
+
+        // Draco attrs (in Draco buffer)
+        struct DracoAttr { std::string name; int draco_id; std::string type; };
+        std::vector<DracoAttr> draco_attrs;
+        draco_attrs.push_back({"POSITION", pos_att_id, "VEC3"});
+        if (nrm_att_id >= 0) draco_attrs.push_back({"NORMAL", nrm_att_id, "VEC3"});
+        if (uv_att_id >= 0) draco_attrs.push_back({"TEXCOORD_0", uv_att_id, "VEC2"});
+
+        int next_acc = (int)draco_attrs.size(); // accessor index for custom attrs
 
         js << "{\"asset\":{\"version\":\"2.0\",\"generator\":\"meshparam+draco\"},"
            << "\"extensionsUsed\":[\"KHR_draco_mesh_compression\"],"
@@ -669,30 +670,53 @@ std::vector<uint8_t> draco_compress_glb(const std::vector<uint8_t>& glb_data) {
            << "\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
            << "\"meshes\":[{\"primitives\":[{"
            << "\"attributes\":{";
-        for (size_t i = 0; i < attrs.size(); ++i) {
+        for (size_t i = 0; i < draco_attrs.size(); ++i) {
             if (i > 0) js << ",";
-            js << "\"" << attrs[i].name << "\":" << i;
+            js << "\"" << draco_attrs[i].name << "\":" << i;
         }
+        if (has_seam) js << ",\"_SEAM\":" << next_acc++;
+        if (has_fid) js << ",\"_FACE_ID\":" << next_acc++;
         js << "},\"mode\":4,"
            << "\"extensions\":{\"KHR_draco_mesh_compression\":{"
            << "\"bufferView\":0,\"attributes\":{";
-        for (size_t i = 0; i < attrs.size(); ++i) {
+        for (size_t i = 0; i < draco_attrs.size(); ++i) {
             if (i > 0) js << ",";
-            js << "\"" << attrs[i].name << "\":" << attrs[i].draco_id;
+            js << "\"" << draco_attrs[i].name << "\":" << draco_attrs[i].draco_id;
         }
         js << "}}}}]}],"
            << "\"accessors\":[";
-        for (size_t i = 0; i < attrs.size(); ++i) {
+        // Draco accessors
+        for (size_t i = 0; i < draco_attrs.size(); ++i) {
             if (i > 0) js << ",";
-            js << "{\"componentType\":5126,\"count\":" << nv << ",\"type\":\"" << attrs[i].type << "\"";
-            if (attrs[i].has_minmax) {
+            js << "{\"componentType\":5126,\"count\":" << nv << ",\"type\":\"" << draco_attrs[i].type << "\"";
+            if (i == 0) { // POSITION min/max
                 js << ",\"min\":[" << mesh.V.col(0).minCoeff() << "," << mesh.V.col(1).minCoeff() << "," << mesh.V.col(2).minCoeff() << "]"
                    << ",\"max\":[" << mesh.V.col(0).maxCoeff() << "," << mesh.V.col(1).maxCoeff() << "," << mesh.V.col(2).maxCoeff() << "]";
             }
             js << "}";
         }
-        js << "],\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":" << draco_size << "}],"
-           << "\"buffers\":[{\"byteLength\":" << draco_size << "}]}";
+        // Custom accessors (uncompressed)
+        int custom_bv_start = 1; // BV 0 = Draco, BV 1+ = custom
+        if (has_seam) {
+            js << ",{\"bufferView\":" << custom_bv_start++ << ",\"componentType\":5126,\"count\":" << nv << ",\"type\":\"SCALAR\"}";
+        }
+        if (has_fid) {
+            js << ",{\"bufferView\":" << custom_bv_start++ << ",\"componentType\":5126,\"count\":" << nv << ",\"type\":\"SCALAR\"}";
+        }
+        js << "],\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":" << draco_size << "}";
+        // Custom bufferViews (in the same buffer, after Draco data)
+        size_t custom_base = draco_size;
+        while (custom_base % 4) custom_base++;
+        if (has_seam) {
+            js << ",{\"buffer\":0,\"byteOffset\":" << (custom_base + seam_bv_offset)
+               << ",\"byteLength\":" << seam_bv_size << ",\"target\":34962}";
+        }
+        if (has_fid) {
+            js << ",{\"buffer\":0,\"byteOffset\":" << (custom_base + fid_bv_offset)
+               << ",\"byteLength\":" << fid_bv_size << ",\"target\":34962}";
+        }
+        size_t total_buf = custom_base + custom_buf.size();
+        js << "],\"buffers\":[{\"byteLength\":" << total_buf << "}]}";
         json_str = js.str();
     }
     while (json_str.size() % 4) json_str += ' ';

@@ -28,6 +28,9 @@ const canvas = $('renderCanvas');
 const engine = new BABYLON.Engine(canvas, true);
 let scene = null;
 let currentMesh = null;
+// Expose for debugging/testing
+window.__mesh = () => currentMesh;
+window.__scene = () => scene;
 
 // --- Scene ---
 function createScene() {
@@ -54,7 +57,9 @@ function clearMetrics() {
     $('comparisonBody').innerHTML = '';
 }
 
+let lastGlbBuffer = null; // keep for custom attr injection
 async function loadGlb(glbBuffer, applyChecker = false) {
+    lastGlbBuffer = glbBuffer;
     if (scene) scene.meshes.slice().forEach(m => m.dispose());
     const blob = new Blob([glbBuffer], { type: 'model/gltf-binary' });
     const url = URL.createObjectURL(blob);
@@ -76,6 +81,8 @@ async function loadGlb(glbBuffer, applyChecker = false) {
             scene.activeCamera.radius = extent * 1.5;
             new BABYLON.AxesViewer(scene, extent > 10 ? 20 : extent * 0.2);
             currentMesh = container.meshes.find(m => m.getTotalVertices() > 0) || container.meshes[0];
+            // Inject custom attributes (_SEAM, _FACE_ID) from raw GLB
+            if (currentMesh && lastGlbBuffer) injectCustomAttrs(currentMesh, lastGlbBuffer);
             if (applyChecker && currentMesh?.isVerticesDataPresent(BABYLON.VertexBuffer.UVKind)) applyCheckerboard(currentMesh);
             let tv = 0, tt = 0;
             container.meshes.forEach(m => { tv += m.getTotalVertices(); tt += m.getTotalIndices()/3; });
@@ -408,6 +415,8 @@ function showEdgeOverlay(mesh, attrName, color, overlayName) {
         }
     }
 
+    console.log(`[edges] ${overlayName}: ${linePoints.length / 2} edges found (attr=${attrName}, hasData=${!!attrData})`);
+
     if (linePoints.length > 0) {
         const lines = BABYLON.MeshBuilder.CreateLineSystem(overlayName, {
             lines: Array.from({length: linePoints.length / 2}, (_, i) =>
@@ -415,6 +424,39 @@ function showEdgeOverlay(mesh, attrName, color, overlayName) {
         }, scene);
         lines.color = color;
         lines.isPickable = false;
+    }
+}
+
+// Inject custom attributes from raw GLB into BabylonJS mesh
+// (BabylonJS glTF loader ignores underscore-prefixed attributes)
+function injectCustomAttrs(mesh, glbBuffer) {
+    try {
+        const data = new Uint8Array(glbBuffer);
+        const jl = new DataView(data.buffer).getUint32(12, true);
+        const json = JSON.parse(new TextDecoder().decode(data.slice(20, 20 + jl)));
+        const prim = json.meshes?.[0]?.primitives?.[0];
+        if (!prim) return;
+
+        let binStart = 20 + jl;
+        while (binStart % 4) binStart++;
+        binStart += 8;
+
+        for (const attrName of ['_SEAM', '_FACE_ID']) {
+            const accIdx = prim.attributes[attrName];
+            if (accIdx == null) continue;
+            const acc = json.accessors[accIdx];
+            const bv = json.bufferViews[acc.bufferView];
+            const offset = binStart + (bv.byteOffset || 0) + (acc.byteOffset || 0);
+            const count = acc.count;
+            const attrData = new Float32Array(data.buffer, offset, count);
+
+            // Register as custom vertex buffer
+            const buffer = new BABYLON.Buffer(mesh.getEngine(), attrData, false, 1);
+            mesh.setVerticesBuffer(buffer.createVertexBuffer(attrName, 0, 1));
+            console.log(`[inject] ${attrName}: ${count} values injected`);
+        }
+    } catch (e) {
+        console.warn('[inject] Failed to inject custom attrs:', e);
     }
 }
 
