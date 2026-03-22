@@ -325,7 +325,6 @@ async function loadMethodResult(session, methodName) {
 
 // --- Seam visualization ---
 function showSeamLines(mesh) {
-    // Remove old seam lines
     scene.meshes.filter(m => m.name === '_seam_lines').forEach(m => m.dispose());
 
     if (!mesh || !mesh.isVerticesDataPresent(BABYLON.VertexBuffer.UVKind)) return;
@@ -335,38 +334,37 @@ function showSeamLines(mesh) {
     const indices = mesh.getIndices();
     if (!positions || !uvs || !indices) return;
 
-    // Find edges where UVs are discontinuous (seam edges)
-    // An edge is a seam if it appears in two triangles but the UV coordinates differ
-    const edgeMap = new Map(); // "min_max" -> [{triIdx, uvA, uvB}]
+    // For split-vertex meshes, match edges by POSITION (quantized), not vertex index.
+    // Two triangles share a geometric edge if they have two vertices at the same positions.
+    const q = (v) => Math.round(v * 1e4); // quantize to 0.1mm
+    const posKey = (i) => `${q(positions[i*3])}_${q(positions[i*3+1])}_${q(positions[i*3+2])}`;
+
+    // Build: geometric edge (posKeyA_posKeyB) → list of {uvA, uvB, posA, posB}
+    const edgeMap = new Map();
     for (let t = 0; t < indices.length; t += 3) {
         for (let e = 0; e < 3; e++) {
             const a = indices[t + e], b = indices[t + (e + 1) % 3];
-            const key = Math.min(a, b) + '_' + Math.max(a, b);
+            const ka = posKey(a), kb = posKey(b);
+            const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
             if (!edgeMap.has(key)) edgeMap.set(key, []);
-            edgeMap.get(key).push({
-                uA: [uvs[a * 2], uvs[a * 2 + 1]],
-                uB: [uvs[b * 2], uvs[b * 2 + 1]],
-            });
+            const uA = ka < kb ? [uvs[a*2], uvs[a*2+1]] : [uvs[b*2], uvs[b*2+1]];
+            const uB = ka < kb ? [uvs[b*2], uvs[b*2+1]] : [uvs[a*2], uvs[a*2+1]];
+            edgeMap.get(key).push({ uA, uB, a, b });
         }
     }
 
-    // Seam = edge shared by 2 triangles with different UVs at same vertex
-    // Also: boundary edges (only 1 triangle) are seams
+    // Seam = geometric edge where UVs differ between the two sides.
+    // NOT boundary edges (split vertices always create index-level boundaries).
     const seamPoints = [];
     for (const [key, entries] of edgeMap) {
-        const [a, b] = key.split('_').map(Number);
-        let isSeam = false;
+        if (entries.length < 2) continue; // skip true boundary edges (not seams)
 
-        if (entries.length === 1) {
-            isSeam = true; // boundary edge
-        } else if (entries.length >= 2) {
-            // Check if UVs differ across the two triangles for vertex a or b
-            const d0 = Math.abs(entries[0].uA[0] - entries[1].uA[0]) + Math.abs(entries[0].uA[1] - entries[1].uA[1]);
-            const d1 = Math.abs(entries[0].uB[0] - entries[1].uB[0]) + Math.abs(entries[0].uB[1] - entries[1].uB[1]);
-            if (d0 > 0.001 || d1 > 0.001) isSeam = true;
-        }
-
-        if (isSeam) {
+        // Compare UVs from first two entries
+        const e0 = entries[0], e1 = entries[1];
+        const dA = Math.abs(e0.uA[0] - e1.uA[0]) + Math.abs(e0.uA[1] - e1.uA[1]);
+        const dB = Math.abs(e0.uB[0] - e1.uB[0]) + Math.abs(e0.uB[1] - e1.uB[1]);
+        if (dA > 0.001 || dB > 0.001) {
+            const a = e0.a, b = e0.b;
             seamPoints.push(
                 new BABYLON.Vector3(positions[a*3], positions[a*3+1], positions[a*3+2]),
                 new BABYLON.Vector3(positions[b*3], positions[b*3+1], positions[b*3+2]),
