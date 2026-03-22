@@ -20,7 +20,7 @@ if (BABYLON.DracoCompression) {
 const API = 'http://localhost:8080';
 
 // --- State ---
-const state = { inputGlb: null, resultGlb: null, fileName: '' };
+const state = { inputGlb: null, resultGlb: null, fileName: '', isStep: false, stepBuffer: null };
 
 // --- DOM ---
 const $ = id => document.getElementById(id);
@@ -129,6 +129,25 @@ async function apiParameterize(glbBuffer, method, viewWeighted, forceHeal) {
     };
 }
 
+async function apiParameterizeStep(stepBuffer, viewWeighted, forceHeal, includeRemesh) {
+    const params = new URLSearchParams();
+    if (viewWeighted) params.set('viewWeighted', 'true');
+    if (forceHeal) params.set('heal', 'true');
+    if (includeRemesh) params.set('remesh', 'true');
+    const r = await fetch(`${API}/api/parameterize/step?${params}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: stepBuffer,
+    });
+    if (!r.ok) { const e = await r.text(); throw new Error(e); }
+    return {
+        glb: await r.arrayBuffer(),
+        method: r.headers.get('X-Method'),
+        metrics: r.headers.get('X-Metrics'),
+        allMethods: r.headers.get('X-All-Methods'),
+        healInfo: r.headers.get('X-Heal-Info'),
+        session: r.headers.get('X-Session'),
+    };
+}
+
 // --- File input ---
 $('fileInput').addEventListener('change', async (e) => {
     const file = e.target.files[0];
@@ -141,13 +160,17 @@ $('fileInput').addEventListener('change', async (e) => {
     try {
         const buffer = await file.arrayBuffer();
         if (ext === 'step' || ext === 'stp') {
+            state.isStep = true;
+            state.stepBuffer = buffer;
             $('fileInfo').textContent = `${file.name} (${(file.size/1024).toFixed(1)} KB) - STEP`;
-            setStatus('STEP → GLB (server-side OCC tessellation)...', 'working');
+            setStatus('STEP → GLB (server-side OCC preview)...', 'working');
             const t0 = performance.now();
             state.inputGlb = await apiTessellate(buffer);
             setMetric('metStepTime', `${(performance.now()-t0).toFixed(0)} ms`);
-            $('fileInfo').textContent = `${file.name} - STEP → GLB`;
+            $('fileInfo').textContent = `${file.name} - STEP (OCC+ACIS available)`;
         } else {
+            state.isStep = false;
+            state.stepBuffer = null;
             $('fileInfo').textContent = `${file.name} (${(file.size/1024).toFixed(1)} KB) - GLB`;
             state.inputGlb = buffer;
         }
@@ -170,17 +193,28 @@ $('paramBtn').addEventListener('click', async () => {
     const method = $('methodSelect').value;
     const viewWeighted = $('viewWeighted')?.checked || false;
     const forceHeal = $('forceHeal')?.checked || false;
+    const includeRemesh = $('includeRemesh')?.checked || false;
     if (!state.inputGlb) return;
 
     $('paramBtn').disabled = true;
     $('paramInfo').textContent = '';
     const label = method === 'auto' ? 'all methods (broker)' : method;
-    const healLabel = forceHeal ? ' + mesh healing' : '';
-    setStatus(`Running ${label}${healLabel} on server...`, 'working');
+    const extras = [
+        forceHeal ? 'heal' : '',
+        includeRemesh ? 'remesh' : '',
+        state.isStep ? 'OCC+ACIS' : '',
+    ].filter(Boolean).join(', ');
+    setStatus(`Running ${label}${extras ? ' (' + extras + ')' : ''} on server...`, 'working');
 
     try {
         const t0 = performance.now();
-        const result = await apiParameterize(state.inputGlb, method, viewWeighted, forceHeal);
+        let result;
+        if (state.isStep && state.stepBuffer && method === 'auto') {
+            // Use STEP endpoint for dual tessellation comparison
+            result = await apiParameterizeStep(state.stepBuffer, viewWeighted, forceHeal, includeRemesh);
+        } else {
+            result = await apiParameterize(state.inputGlb, method, viewWeighted, forceHeal);
+        }
         const elapsed = performance.now() - t0;
 
         state.resultGlb = result.glb;
