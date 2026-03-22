@@ -153,6 +153,7 @@ add_executable(meshparam_server main.cpp)
 
 target_include_directories(meshparam_server PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}  # httplib.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/flip-free-parametrization/include  # Stein ADMM
 )
 
 target_link_libraries(meshparam_server PRIVATE meshparam_lib cgalparam_lib)
