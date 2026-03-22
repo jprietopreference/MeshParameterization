@@ -36,17 +36,13 @@ target_link_directories(acis_tessellate_cli PRIVATE
 # Core ACIS libs
 target_link_libraries(acis_tessellate_cli PRIVATE
     # Interop
-    SPAIop SPAIInterop SPAIopAcis SPAIopUtilities
+    SPAIop SPAIInterop SPAIopAcis SPAIAcis SPAAcisDs SPAIopUtilities
     # ACIS core
     kern_scm ga_scm ds_scm
     # Faceting
     fct_scm
-    # Compound (needed by facet_api)
+    # Compound
     covr_scm
-    # Geometry
-    ga_husk_scm
-    # I/O
-    acisio_scm
 )
 
 if(MSVC)
@@ -54,6 +50,9 @@ if(MSVC)
         _USE_MATH_DEFINES NOMINMAX _WINDOWS_SOURCE NT
     )
     target_compile_options(acis_tessellate_cli PRIVATE /EHsc /bigobj)
+    # ACIS 2026 restructured libs — Interop still references old SpaACIS.lib
+    # Ignore the defaultlib and link all needed _scm libs explicitly
+    target_link_options(acis_tessellate_cli PRIVATE /NODEFAULTLIB:SpaACIS)
 endif()
 
 # Copy ACIS DLLs to output directory

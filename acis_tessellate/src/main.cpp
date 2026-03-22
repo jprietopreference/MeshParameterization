@@ -124,10 +124,10 @@ int main(int argc, char* argv[]) {
         // Initialize faceter
         api_initialize_faceter();
 
-        // Set facet options
-        facet_options* fo = ACIS_NEW(facet_options);
-        fo->set_surface_tol(deflection);
-        fo->set_normal_tol(15.0); // 15 degree normal tolerance
+        // Set facet options (precise mode for surface tolerance control)
+        facet_options_precise fo;
+        fo.set_surface_tolerance(deflection);
+        fo.set_normal_tolerance(15.0); // 15 degree
 
         // Iterate over entities, facet each BODY
         for (int ei = 0; ei < pEntities->count(); ++ei) {
@@ -136,83 +136,68 @@ int main(int argc, char* argv[]) {
 
             BODY* body = (BODY*)ent;
 
-            // Set up indexed mesh manager to capture facets
-            INDEXED_MESH_MANAGER* mm = ACIS_NEW(INDEXED_MESH_MANAGER);
-            api_set_mesh_manager(mm);
-
             // Facet the body
-            outcome o = api_facet_entity(body, fo);
+            outcome o = api_facet_entity(body, &fo);
             if (!o.ok()) {
                 std::cerr << "Warning: faceting failed for entity " << ei << std::endl;
-                ACIS_DELETE(mm);
                 continue;
             }
 
-            // Extract mesh from manager — iterate over faces
+            // Extract mesh per face (split vertices at B-Rep boundaries)
             ENTITY_LIST face_list;
             api_get_faces(body, face_list);
 
             for (int fi = 0; fi < face_list.count(); ++fi) {
                 FACE* face = (FACE*)face_list[fi];
 
-                // Get the indexed polygon for this face from the mesh manager
-                int npoly = mm->get_num_polygon();
-                // The mesh manager stores ALL polygons from the body.
-                // We need to find which polygons belong to this face.
-                // Simple approach: iterate all polygons and extract vertices/normals.
-                // For per-face extraction, we use the face's ATTRIB_FACET data.
+                INDEXED_MESH* mesh = NULL;
+                outcome mo = api_get_indexed_mesh(face, mesh);
+                if (!mo.ok() || !mesh) continue;
 
-                // Alternative: use api_get_facets on the face directly
-                // For now, just extract all at body level
-            }
+                int npts = mesh->get_num_vertex();
+                int npolys = mesh->get_num_polygon();
+                uint32_t base = static_cast<uint32_t>(all_verts.size() / 3);
 
-            // Extract ALL mesh data from the indexed mesh manager
-            int total_verts = mm->get_num_vertex();
-            int total_polys = mm->get_num_polygon();
+                // Add vertices + normals (per face = split at boundaries)
+                for (int vi = 0; vi < npts; ++vi) {
+                    const SPAposition& pt = mesh->get_position(vi);
+                    all_verts.push_back(static_cast<float>(pt.x() * scale_to_mm));
+                    all_verts.push_back(static_cast<float>(pt.y() * scale_to_mm));
+                    all_verts.push_back(static_cast<float>(pt.z() * scale_to_mm));
 
-            // Build vertex data
-            uint32_t base = static_cast<uint32_t>(all_verts.size() / 3);
-            for (int vi = 0; vi < total_verts; ++vi) {
-                polygon_vertex& pv = mm->get_vertex(vi);
-                const SPAposition& pt = pv.get_position();
-                all_verts.push_back(static_cast<float>(pt.x() * scale_to_mm));
-                all_verts.push_back(static_cast<float>(pt.y() * scale_to_mm));
-                all_verts.push_back(static_cast<float>(pt.z() * scale_to_mm));
+                    const SPAunit_vector& nrm = mesh->get_normal(vi);
+                    all_normals.push_back(static_cast<float>(nrm.x()));
+                    all_normals.push_back(static_cast<float>(nrm.y()));
+                    all_normals.push_back(static_cast<float>(nrm.z()));
 
-                const SPAunit_vector& nrm = mm->get_normal(vi);
-                all_normals.push_back(static_cast<float>(nrm.x()));
-                all_normals.push_back(static_cast<float>(nrm.y()));
-                all_normals.push_back(static_cast<float>(nrm.z()));
+                    all_face_ids.push_back(static_cast<float>(occ_face_idx));
+                }
 
-                // All vertices get the same face ID for this body (we'll refine later)
-                all_face_ids.push_back(static_cast<float>(occ_face_idx));
-            }
-
-            // Build triangle data
-            for (int pi = 0; pi < total_polys; ++pi) {
-                indexed_polygon* poly = mm->get_polygon(pi);
-                int poly_nv = poly->get_num_vertex();
-                if (poly_nv == 3) {
-                    // Triangle
-                    for (int k = 0; k < 3; ++k) {
-                        int vi = poly->get_vertex_index(&poly->get_vertex(k));
-                        all_tris.push_back(base + vi);
-                    }
-                } else if (poly_nv > 3) {
-                    // Fan triangulate
-                    int v0_idx = poly->get_vertex_index(&poly->get_vertex(0));
-                    for (int k = 1; k + 1 < poly_nv; ++k) {
-                        int v1_idx = poly->get_vertex_index(&poly->get_vertex(k));
-                        int v2_idx = poly->get_vertex_index(&poly->get_vertex(k + 1));
-                        all_tris.push_back(base + v0_idx);
-                        all_tris.push_back(base + v1_idx);
-                        all_tris.push_back(base + v2_idx);
+                // Add triangles from polygons
+                for (int pi = 0; pi < npolys; ++pi) {
+                    indexed_polygon* poly = mesh->get_polygon(pi);
+                    int poly_nv = poly->num_vertex();
+                    if (poly_nv == 3) {
+                        for (int k = 0; k < 3; ++k) {
+                            polygon_vertex* pv = poly->get_vertex(k);
+                            int vi = mesh->get_vertex_index(pv);
+                            all_tris.push_back(base + vi);
+                        }
+                    } else if (poly_nv > 3) {
+                        polygon_vertex* pv0 = poly->get_vertex(0);
+                        int v0 = mesh->get_vertex_index(pv0);
+                        for (int k = 1; k + 1 < poly_nv; ++k) {
+                            polygon_vertex* pv1 = poly->get_vertex(k);
+                            polygon_vertex* pv2 = poly->get_vertex(k + 1);
+                            all_tris.push_back(base + v0);
+                            all_tris.push_back(base + mesh->get_vertex_index(pv1));
+                            all_tris.push_back(base + mesh->get_vertex_index(pv2));
+                        }
                     }
                 }
-            }
 
-            occ_face_idx++;
-            ACIS_DELETE(mm);
+                occ_face_idx++;
+            }
         }
 
         api_terminate_faceter();
