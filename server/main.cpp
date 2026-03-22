@@ -8,11 +8,15 @@
 #include "meshparam/distortion.h"
 #include <tiny_gltf.h>
 
-// SLIM
+// libigl parameterization methods
 #include <igl/slim.h>
+#include <igl/lscm.h>
+#include <igl/arap.h>
 #include <igl/boundary_loop.h>
 #include <igl/harmonic.h>
 #include <igl/map_vertices_to_circle.h>
+#include <igl/flipped_triangles.h>
+#include "meshparam/benchmark_metrics.h"
 
 #include "cgalparam/gltf_io.h"
 #include "cgalparam/cgal_parameterize.h"
@@ -285,15 +289,24 @@ struct MethodResult {
     double stretch_mean = 999;
     double stretch_max = 999;
     double iso_rms = -1;
+    // Benchmark metrics (Stein et al. 2022)
+    int flipped_tris = -1;
+    double sym_dirichlet = -1;
+    double l2_area = -1;
+    double linf_area = -1;
     int vertices = 0;
     int faces = 0;
     std::vector<uint8_t> glb;
 
     // Composite quality score (lower = better)
+    // Updated to use Symmetric Dirichlet + flipped triangles penalty
     double score() const {
         if (!success) return 1e18;
-        // Weighted: angle distortion (40%), stretch (40%), area uniformity (20%)
-        return angle_mean * 0.4 + std::log1p(stretch_mean) * 10.0 * 0.4 + area_std * 0.2;
+        // Primary: Symmetric Dirichlet energy (lower = better, 4.0 = perfect isometry)
+        // Penalty: flipped triangles (1e6 per flip)
+        double sd = (sym_dirichlet > 0) ? sym_dirichlet : (angle_mean * 0.4 + std::log1p(stretch_mean) * 10.0 * 0.4 + area_std * 0.2);
+        double flip_penalty = (flipped_tris > 0) ? flipped_tris * 1e6 : 0;
+        return sd + flip_penalty;
     }
 
     std::string to_json() const {
@@ -313,6 +326,10 @@ struct MethodResult {
               << ",\"stretch_mean\":" << stretch_mean
               << ",\"stretch_max\":" << stretch_max
               << ",\"iso_rms\":" << iso_rms
+              << ",\"flipped_tris\":" << flipped_tris
+              << ",\"sym_dirichlet\":" << sym_dirichlet
+              << ",\"l2_area\":" << l2_area
+              << ",\"linf_area\":" << linf_area
               << ",\"score\":" << score();
         }
         o << "}";
@@ -323,6 +340,14 @@ struct MethodResult {
 // ============================================================
 // Run individual methods
 // ============================================================
+void fill_benchmark_metrics(MethodResult& r, const Eigen::MatrixXd& V, const Eigen::MatrixXi& F, const Eigen::MatrixXd& UV) {
+    auto bm = meshparam::compute_benchmark_metrics(V, F, UV);
+    r.flipped_tris = bm.flipped_triangles;
+    r.sym_dirichlet = bm.symmetric_dirichlet;
+    r.l2_area = bm.l2_area_distortion;
+    r.linf_area = bm.linf_area_distortion;
+}
+
 MethodResult run_heat(const std::vector<uint8_t>& input_glb, bool view_weighted) {
     MethodResult r;
     r.method = "heat";
@@ -359,6 +384,72 @@ MethodResult run_heat(const std::vector<uint8_t>& input_glb, bool view_weighted)
         r.stretch_mean = metrics.mean_stretch;
         r.stretch_max = metrics.max_stretch;
         r.iso_rms = metrics.isometric_rms;
+        fill_benchmark_metrics(r, result.V, result.F, result.UV);
+    } catch (const std::exception& e) {
+        r.error = e.what();
+    }
+    auto t1 = std::chrono::high_resolution_clock::now();
+    r.elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    return r;
+}
+
+MethodResult run_lscm(const std::vector<uint8_t>& input_glb) {
+    MethodResult r;
+    r.method = "lscm";
+    auto t0 = std::chrono::high_resolution_clock::now();
+    try {
+        auto mesh = meshparam::load_gltf_from_memory(input_glb);
+
+        // LSCM needs at least 2 pinned vertices
+        Eigen::VectorXi bnd;
+        igl::boundary_loop(mesh.F, bnd);
+
+        Eigen::VectorXi b(2);
+        Eigen::MatrixXd bc(2, 2);
+        if (bnd.size() >= 2) {
+            b(0) = bnd(0);
+            b(1) = bnd(bnd.size() / 2);
+        } else {
+            b(0) = 0; b(1) = 1;
+        }
+        bc << 0, 0, 1, 0; // pin 2 vertices
+
+        Eigen::MatrixXd UV;
+        igl::lscm(mesh.V, mesh.F, b, bc, UV);
+
+        // Check for NaN
+        for (int i = 0; i < UV.rows(); ++i) {
+            if (!std::isfinite(UV(i,0)) || !std::isfinite(UV(i,1))) {
+                r.error = "LSCM produced NaN UVs";
+                auto t1 = std::chrono::high_resolution_clock::now();
+                r.elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+                return r;
+            }
+        }
+
+        // Normalize UV
+        Eigen::Vector2d mn = UV.colwise().minCoeff();
+        Eigen::Vector2d mx = UV.colwise().maxCoeff();
+        for (int i = 0; i < 2; ++i) {
+            double range = mx(i) - mn(i);
+            if (range > 1e-12) UV.col(i) = (UV.col(i).array() - mn(i)) / range;
+        }
+
+        mesh.UV = UV;
+        mesh.compute_normals();
+
+        auto metrics = meshparam::compute_distortion(mesh.V, mesh.F, mesh.UV);
+        r.glb = meshparam::save_gltf_to_memory(mesh);
+        r.success = true;
+        r.vertices = mesh.num_vertices();
+        r.faces = mesh.num_faces();
+        r.angle_mean = metrics.mean_angle_distortion;
+        r.angle_max = metrics.max_angle_distortion;
+        r.area_mean = metrics.mean_area_distortion;
+        r.area_std = metrics.std_area_distortion;
+        r.stretch_mean = metrics.mean_stretch;
+        r.stretch_max = metrics.max_stretch;
+        fill_benchmark_metrics(r, mesh.V, mesh.F, mesh.UV);
     } catch (const std::exception& e) {
         r.error = e.what();
     }
@@ -386,17 +477,32 @@ MethodResult run_slim(const std::vector<uint8_t>& input_glb, int iterations = 50
             return r;
         }
 
-        // Initial UV: Tutte embedding (boundary mapped to circle, harmonic interior)
-        Eigen::MatrixXd bnd_uv;
-        igl::map_vertices_to_circle(mesh.V, bnd, bnd_uv);
-
+        // Initial UV: try LSCM first (better starting point), fall back to Tutte
         Eigen::MatrixXd V_init;
-        igl::harmonic(mesh.V, mesh.F, bnd, bnd_uv, 1, V_init);
+        {
+            Eigen::VectorXi b_lscm(2);
+            Eigen::MatrixXd bc_lscm(2, 2);
+            b_lscm(0) = bnd(0);
+            b_lscm(1) = bnd(bnd.size() / 2);
+            bc_lscm << 0, 0, 1, 0;
+            igl::lscm(mesh.V, mesh.F, b_lscm, bc_lscm, V_init);
 
-        // Check for NaN in initial UV
+            bool has_nan = false;
+            for (int i = 0; i < V_init.rows() && !has_nan; ++i)
+                if (!std::isfinite(V_init(i,0)) || !std::isfinite(V_init(i,1))) has_nan = true;
+
+            if (has_nan || V_init.rows() == 0) {
+                // Fall back to Tutte
+                Eigen::MatrixXd bnd_uv;
+                igl::map_vertices_to_circle(mesh.V, bnd, bnd_uv);
+                igl::harmonic(mesh.V, mesh.F, bnd, bnd_uv, 1, V_init);
+            }
+        }
+
+        // Final NaN check
         for (int i = 0; i < V_init.rows(); ++i) {
             if (!std::isfinite(V_init(i, 0)) || !std::isfinite(V_init(i, 1))) {
-                r.error = "Initial UV (harmonic) contains NaN";
+                r.error = "SLIM: initial UV contains NaN";
                 auto t1 = std::chrono::high_resolution_clock::now();
                 r.elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
                 return r;
@@ -473,6 +579,7 @@ MethodResult run_slim(const std::vector<uint8_t>& input_glb, int iterations = 50
         r.stretch_mean = metrics.mean_stretch;
         r.stretch_max = metrics.max_stretch;
         r.iso_rms = metrics.isometric_rms;
+        fill_benchmark_metrics(r, mesh.V, mesh.F, mesh.UV);
     } catch (const std::exception& e) {
         r.error = e.what();
     }
@@ -609,6 +716,7 @@ MethodResult run_cgal(const std::vector<uint8_t>& input_glb, cgalparam::ParamMet
         r.area_std = metrics.std_area_distortion;
         r.stretch_mean = metrics.mean_stretch;
         r.stretch_max = metrics.max_stretch;
+        fill_benchmark_metrics(r, out.V, out.F, out.UV);
     } catch (const std::exception& e) {
         r.error = e.what();
     }
@@ -983,6 +1091,7 @@ int main(int argc, char* argv[]) {
         if (forced_method == "auto") {
             // Path A: original healed+welded mesh
             methods_to_run.push_back({"heat", false});
+            methods_to_run.push_back({"lscm", false});
             methods_to_run.push_back({"slim", false});
             methods_to_run.push_back({"cgal_conformal", false});
             methods_to_run.push_back({"cgal_arap", false});
@@ -990,6 +1099,7 @@ int main(int argc, char* argv[]) {
             // Path B: remeshed (if available)
             if (has_remesh) {
                 methods_to_run.push_back({"heat", true});
+                methods_to_run.push_back({"lscm", true});
                 methods_to_run.push_back({"slim", true});
                 methods_to_run.push_back({"cgal_conformal", true});
                 methods_to_run.push_back({"cgal_arap", true});
@@ -1010,6 +1120,9 @@ int main(int argc, char* argv[]) {
                 std::string suffix = mdef.on_remeshed ? "_remeshed" : "";
                 if (mdef.name == "heat") {
                     results[i] = run_heat(mesh_input, view_weighted);
+                    results[i].method += suffix;
+                } else if (mdef.name == "lscm") {
+                    results[i] = run_lscm(mesh_input);
                     results[i].method += suffix;
                 } else if (mdef.name == "slim") {
                     results[i] = run_slim(mesh_input);
@@ -1267,7 +1380,7 @@ int main(int argc, char* argv[]) {
         std::vector<std::thread> workers;
         std::mutex results_mutex;
 
-        std::vector<std::string> methods = {"heat", "slim", "cgal_conformal", "cgal_arap", "cgal_authalic"};
+        std::vector<std::string> methods = {"heat", "lscm", "slim", "cgal_conformal", "cgal_arap", "cgal_authalic"};
 
         for (auto& tess : tessellations) {
             // Heal + weld
@@ -1282,6 +1395,8 @@ int main(int argc, char* argv[]) {
                     MethodResult r;
                     if (method_name == "heat") {
                         r = run_heat(input_welded, view_weighted);
+                    } else if (method_name == "lscm") {
+                        r = run_lscm(input_welded);
                     } else if (method_name == "slim") {
                         r = run_slim(input_welded);
                     } else if (method_name == "cgal_conformal") {
