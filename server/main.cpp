@@ -458,6 +458,50 @@ MethodResult run_lscm(const std::vector<uint8_t>& input_glb) {
     return r;
 }
 
+MethodResult run_igl_arap(const std::vector<uint8_t>& input_glb) {
+    MethodResult r;
+    r.method = "igl_arap";
+    auto t0 = std::chrono::high_resolution_clock::now();
+    try {
+        auto mesh = meshparam::load_gltf_from_memory(input_glb);
+        Eigen::VectorXi bnd;
+        igl::boundary_loop(mesh.F, bnd);
+        if (bnd.size() == 0) { r.error = "needs boundary"; goto end_arap; }
+        {
+            // Init from LSCM
+            Eigen::VectorXi b2(2); Eigen::MatrixXd bc2(2,2);
+            b2(0)=bnd(0); b2(1)=bnd(bnd.size()/2); bc2<<0,0,1,0;
+            Eigen::MatrixXd UV;
+            igl::lscm(mesh.V, mesh.F, b2, bc2, UV);
+            for(int i=0;i<UV.rows();++i) if(!std::isfinite(UV(i,0))||!std::isfinite(UV(i,1))){r.error="LSCM init NaN";goto end_arap;}
+
+            Eigen::MatrixXd bc(bnd.size(),2);
+            for(int i=0;i<bnd.size();++i) bc.row(i)=UV.row(bnd(i));
+
+            igl::ARAPData ad; ad.max_iter=100;
+            arap_precomputation(mesh.V,mesh.F,2,bnd,ad);
+            arap_solve(bc,ad,UV);
+
+            for(int i=0;i<UV.rows();++i) if(!std::isfinite(UV(i,0))||!std::isfinite(UV(i,1))){r.error="ARAP NaN";goto end_arap;}
+
+            Eigen::Vector2d mn=UV.colwise().minCoeff(), mx=UV.colwise().maxCoeff();
+            for(int i=0;i<2;++i){double rng=mx(i)-mn(i);if(rng>1e-12)UV.col(i)=(UV.col(i).array()-mn(i))/rng;}
+
+            mesh.UV=UV; mesh.compute_normals();
+            auto metrics=meshparam::compute_distortion(mesh.V,mesh.F,mesh.UV);
+            r.glb=meshparam::save_gltf_to_memory(mesh);
+            r.success=true; r.vertices=mesh.num_vertices(); r.faces=mesh.num_faces();
+            r.angle_mean=metrics.mean_angle_distortion; r.angle_max=metrics.max_angle_distortion;
+            r.area_mean=metrics.mean_area_distortion; r.area_std=metrics.std_area_distortion;
+            r.stretch_mean=metrics.mean_stretch; r.stretch_max=metrics.max_stretch;
+            fill_benchmark_metrics(r,mesh.V,mesh.F,mesh.UV);
+        }
+    } catch(const std::exception& e) { r.error=e.what(); }
+    end_arap:
+    { auto t1=std::chrono::high_resolution_clock::now(); r.elapsed_ms=std::chrono::duration<double,std::milli>(t1-t0).count(); }
+    return r;
+}
+
 MethodResult run_slim(const std::vector<uint8_t>& input_glb, int iterations = 50) {
     MethodResult r;
     r.method = "slim";
@@ -1092,6 +1136,7 @@ int main(int argc, char* argv[]) {
             // Path A: original healed+welded mesh
             methods_to_run.push_back({"heat", false});
             methods_to_run.push_back({"lscm", false});
+            methods_to_run.push_back({"igl_arap", false});
             methods_to_run.push_back({"slim", false});
             methods_to_run.push_back({"cgal_conformal", false});
             methods_to_run.push_back({"cgal_arap", false});
@@ -1100,6 +1145,7 @@ int main(int argc, char* argv[]) {
             if (has_remesh) {
                 methods_to_run.push_back({"heat", true});
                 methods_to_run.push_back({"lscm", true});
+                methods_to_run.push_back({"igl_arap", true});
                 methods_to_run.push_back({"slim", true});
                 methods_to_run.push_back({"cgal_conformal", true});
                 methods_to_run.push_back({"cgal_arap", true});
@@ -1123,6 +1169,9 @@ int main(int argc, char* argv[]) {
                     results[i].method += suffix;
                 } else if (mdef.name == "lscm") {
                     results[i] = run_lscm(mesh_input);
+                    results[i].method += suffix;
+                } else if (mdef.name == "igl_arap") {
+                    results[i] = run_igl_arap(mesh_input);
                     results[i].method += suffix;
                 } else if (mdef.name == "slim") {
                     results[i] = run_slim(mesh_input);
@@ -1380,7 +1429,7 @@ int main(int argc, char* argv[]) {
         std::vector<std::thread> workers;
         std::mutex results_mutex;
 
-        std::vector<std::string> methods = {"heat", "lscm", "slim", "cgal_conformal", "cgal_arap", "cgal_authalic"};
+        std::vector<std::string> methods = {"heat", "lscm", "igl_arap", "slim", "cgal_conformal", "cgal_arap", "cgal_authalic"};
 
         for (auto& tess : tessellations) {
             // Heal + weld
@@ -1397,6 +1446,8 @@ int main(int argc, char* argv[]) {
                         r = run_heat(input_welded, view_weighted);
                     } else if (method_name == "lscm") {
                         r = run_lscm(input_welded);
+                    } else if (method_name == "igl_arap") {
+                        r = run_igl_arap(input_welded);
                     } else if (method_name == "slim") {
                         r = run_slim(input_welded);
                     } else if (method_name == "cgal_conformal") {
