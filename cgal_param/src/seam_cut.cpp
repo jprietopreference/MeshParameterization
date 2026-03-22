@@ -430,32 +430,51 @@ SeamCutResult cut_brep_silhouette(const SurfaceMesh& input_mesh,
         return cut_to_disk(input_mesh);
     }
 
-    // The silhouette path is built from edges where both endpoints are silhouette
-    // vertices. Verify consecutive vertices are connected by mesh edges.
-    // If not, bridge gaps with Dijkstra segments.
-    std::vector<VD> valid_path;
-    valid_path.push_back(best_path[0]);
-    for (size_t i = 1; i < best_path.size(); ++i) {
-        ED e = find_edge(input_mesh, best_path[i-1], best_path[i]);
-        if (e != SurfaceMesh::null_edge()) {
-            valid_path.push_back(best_path[i]);
-        } else {
-            // Bridge the gap with Dijkstra
-            auto bridge = dijkstra_path(input_mesh, best_path[i-1], best_path[i]);
-            for (size_t j = 1; j < bridge.size(); ++j)
-                valid_path.push_back(bridge[j]);
-        }
+    // Check if the silhouette path forms a loop (first == last, or first connects
+    // back to last via seam edges). A loop splits the mesh into two disconnected
+    // pieces — we need an OPEN path for cut_along_path to work correctly.
+    bool is_loop = false;
+    {
+        ED closing_edge = find_edge(input_mesh, best_path.front(), best_path.back());
+        if (closing_edge != SurfaceMesh::null_edge() && seam_edges.count(closing_edge))
+            is_loop = true;
     }
 
-    std::cout << "[seam_brep] Cutting along silhouette path: " << valid_path.size()
-              << " vertices (from " << best_path.size() << " silhouette vertices)" << std::endl;
+    // For a loop: use Dijkstra between two well-separated points on the loop
+    // to get an open path that follows the silhouette boundary.
+    // For an open path: use the path directly.
+    std::vector<VD> cut_path;
 
-    if (valid_path.size() < 2) {
+    if (is_loop) {
+        // Pick two points roughly opposite on the loop
+        VD pole_a = best_path[0];
+        VD pole_b = best_path[best_path.size() / 2];
+        cut_path = dijkstra_path(input_mesh, pole_a, pole_b);
+        std::cout << "[seam_brep] Loop detected (" << best_path.size()
+                  << " verts). Dijkstra open path: " << cut_path.size() << " verts" << std::endl;
+    } else {
+        // Open path — verify edge connectivity and bridge gaps
+        cut_path.push_back(best_path[0]);
+        for (size_t i = 1; i < best_path.size(); ++i) {
+            ED e = find_edge(input_mesh, best_path[i-1], best_path[i]);
+            if (e != SurfaceMesh::null_edge()) {
+                cut_path.push_back(best_path[i]);
+            } else {
+                auto bridge = dijkstra_path(input_mesh, best_path[i-1], best_path[i]);
+                for (size_t j = 1; j < bridge.size(); ++j)
+                    cut_path.push_back(bridge[j]);
+            }
+        }
+        std::cout << "[seam_brep] Open path: " << cut_path.size()
+                  << " verts (from " << best_path.size() << " silhouette verts)" << std::endl;
+    }
+
+    if (cut_path.size() < 2) {
         std::cout << "[seam_brep] Invalid path, falling back to BFS" << std::endl;
         return cut_to_disk(input_mesh);
     }
 
-    return cut_along_path(input_mesh, valid_path);
+    return cut_along_path(input_mesh, cut_path);
 }
 
 } // namespace cgalparam
