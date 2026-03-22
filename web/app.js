@@ -342,8 +342,8 @@ function showEdgeOverlay(mesh, attrName, color, overlayName) {
 
     const linePoints = [];
 
-    if (attrData) {
-        // Use attribute: draw edges where both endpoints have attr > 0.5
+    if (attrData && attrName === '_SEAM') {
+        // _SEAM: draw edges where both endpoints are seam vertices (value > 0.5)
         for (let t = 0; t < indices.length; t += 3) {
             for (let e = 0; e < 3; e++) {
                 const a = indices[t + e], b = indices[t + (e + 1) % 3];
@@ -353,6 +353,36 @@ function showEdgeOverlay(mesh, attrName, color, overlayName) {
                         new BABYLON.Vector3(positions[b*3], positions[b*3+1], positions[b*3+2]),
                     );
                 }
+            }
+        }
+    } else if (attrData && attrName === '_FACE_ID') {
+        // _FACE_ID: draw edges between triangles with DIFFERENT face IDs
+        // Build edge map: geometric edge → list of {face_id, vtx_a, vtx_b}
+        const q = v => Math.round(v * 1e4);
+        const pk = i => `${q(positions[i*3])}_${q(positions[i*3+1])}_${q(positions[i*3+2])}`;
+        const edgeMap = new Map();
+        for (let t = 0; t < indices.length; t += 3) {
+            // Use face ID from first vertex of triangle (all 3 have same face ID)
+            const faceId = attrData[indices[t]];
+            for (let e = 0; e < 3; e++) {
+                const a = indices[t + e], b = indices[t + (e + 1) % 3];
+                const ka = pk(a), kb = pk(b);
+                const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+                if (!edgeMap.has(key)) edgeMap.set(key, []);
+                edgeMap.get(key).push({ faceId, a, b });
+            }
+        }
+        // Edges shared by two triangles with different face IDs = B-Rep boundary
+        for (const [, entries] of edgeMap) {
+            if (entries.length < 2) continue;
+            // Check if any two entries have different face IDs
+            const fids = new Set(entries.map(e => e.faceId));
+            if (fids.size > 1) {
+                const { a, b } = entries[0];
+                linePoints.push(
+                    new BABYLON.Vector3(positions[a*3], positions[a*3+1], positions[a*3+2]),
+                    new BABYLON.Vector3(positions[b*3], positions[b*3+1], positions[b*3+2]),
+                );
             }
         }
     } else if (attrName === '_FACE_ID') {

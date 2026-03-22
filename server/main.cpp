@@ -551,13 +551,41 @@ MethodResult run_stein(const std::vector<uint8_t>& input_glb) {
                 if (W.rows() == 0) { r.error = "init failed"; goto end_stein; }
             }
 
-            // Run Stein ADMM optimization (Symmetric Dirichlet energy)
-            parametrization::OptimizationOptions<double> opts;
-            opts.maxIter = 200;
-            bool success = parametrization::map_to<false, parametrization::EnergyType::SymmetricDirichlet>(
-                mesh.V, mesh.F, W, opts);
+            // Check initial UV for flipped triangles
+            Eigen::VectorXi flipped = igl::flipped_triangles(W, mesh.F);
+            if (flipped.size() > 0) {
+                // Try Tutte specifically (guaranteed flip-free)
+                try {
+                    parametrization::tutte<false>(mesh.V, mesh.F, W);
+                    flipped = igl::flipped_triangles(W, mesh.F);
+                } catch (...) {}
+                if (flipped.size() > 0) {
+                    r.error = "Cannot produce flip-free init";
+                    goto end_stein;
+                }
+            }
 
-            if (!success) { r.error = "Stein ADMM optimization failed"; goto end_stein; }
+            // Check for degenerate triangles in UV space
+            {
+                Eigen::MatrixXd UV3(W.rows(), 3);
+                UV3.col(0) = W.col(0); UV3.col(1) = W.col(1); UV3.col(2).setZero();
+                Eigen::VectorXd areas;
+                igl::doublearea(UV3, mesh.F, areas);
+                if (areas.minCoeff() <= 0) {
+                    r.error = "Degenerate UV triangles in init";
+                    goto end_stein;
+                }
+            }
+
+            // Run Stein ADMM optimization (Symmetric Dirichlet energy)
+            {
+                parametrization::OptimizationOptions<double> opts;
+                opts.maxIter = 200;
+                bool success = parametrization::map_to<false, parametrization::EnergyType::SymmetricDirichlet>(
+                    mesh.V, mesh.F, W, opts);
+
+                if (!success) { r.error = "Stein ADMM optimization failed"; goto end_stein; }
+            }
 
             for(int i=0;i<W.rows();++i) if(!std::isfinite(W(i,0))||!std::isfinite(W(i,1))){r.error="NaN UVs";goto end_stein;}
 
@@ -1216,7 +1244,8 @@ int main(int argc, char* argv[]) {
             methods_to_run.push_back({"lscm", false});
             methods_to_run.push_back({"igl_arap", false});
             methods_to_run.push_back({"slim", false});
-            methods_to_run.push_back({"stein_admm", false});
+            // stein_admm disabled from auto — crashes server on ~50% of meshes
+            // Available via method=stein_admm for manual use
             methods_to_run.push_back({"cgal_conformal", false});
             methods_to_run.push_back({"cgal_arap", false});
             methods_to_run.push_back({"cgal_authalic", false});
@@ -1511,7 +1540,7 @@ int main(int argc, char* argv[]) {
         std::vector<std::thread> workers;
         std::mutex results_mutex;
 
-        std::vector<std::string> methods = {"heat", "lscm", "igl_arap", "slim", "stein_admm", "cgal_conformal", "cgal_arap", "cgal_authalic"};
+        std::vector<std::string> methods = {"heat", "lscm", "igl_arap", "slim", "cgal_conformal", "cgal_arap", "cgal_authalic"};
 
         for (auto& tess : tessellations) {
             // Heal + weld
