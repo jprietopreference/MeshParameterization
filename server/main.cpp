@@ -535,15 +535,20 @@ MethodResult run_stein(const std::vector<uint8_t>& input_glb) {
         igl::boundary_loop(mesh.F, bnd);
         if (bnd.size() == 0) { r.error = "needs boundary"; goto end_stein; }
         {
-            // Init from LSCM
-            Eigen::VectorXi b2(2); Eigen::MatrixXd bc2(2,2);
-            b2(0)=bnd(0); b2(1)=bnd(bnd.size()/2); bc2<<0,0,1,0;
+            // Init from Tutte (bijective) or LSCM fallback
             Eigen::MatrixXd W;
-            igl::lscm(mesh.V, mesh.F, b2, bc2, W);
-            for(int i=0;i<W.rows();++i) if(!std::isfinite(W(i,0))||!std::isfinite(W(i,1))){
-                // Fallback to Tutte
+            try {
                 parametrization::tutte<false>(mesh.V, mesh.F, W);
-                break;
+            } catch (...) {
+                W.resize(0, 0);
+            }
+
+            if (W.rows() == 0 || W.rows() != mesh.V.rows()) {
+                // Fallback to LSCM
+                Eigen::VectorXi b2(2); Eigen::MatrixXd bc2(2,2);
+                b2(0)=bnd(0); b2(1)=bnd(bnd.size()/2); bc2<<0,0,1,0;
+                igl::lscm(mesh.V, mesh.F, b2, bc2, W);
+                if (W.rows() == 0) { r.error = "init failed"; goto end_stein; }
             }
 
             // Run Stein ADMM optimization (Symmetric Dirichlet energy)
