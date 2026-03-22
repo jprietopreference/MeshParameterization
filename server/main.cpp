@@ -8,6 +8,12 @@
 #include "meshparam/distortion.h"
 #include <tiny_gltf.h>
 
+// SLIM
+#include <igl/slim.h>
+#include <igl/boundary_loop.h>
+#include <igl/harmonic.h>
+#include <igl/map_vertices_to_circle.h>
+
 #include "cgalparam/gltf_io.h"
 #include "cgalparam/cgal_parameterize.h"
 #include "cgalparam/seam_cut.h"
@@ -346,6 +352,120 @@ MethodResult run_heat(const std::vector<uint8_t>& input_glb, bool view_weighted)
         r.success = true;
         r.vertices = result.num_vertices();
         r.faces = result.num_faces();
+        r.angle_mean = metrics.mean_angle_distortion;
+        r.angle_max = metrics.max_angle_distortion;
+        r.area_mean = metrics.mean_area_distortion;
+        r.area_std = metrics.std_area_distortion;
+        r.stretch_mean = metrics.mean_stretch;
+        r.stretch_max = metrics.max_stretch;
+        r.iso_rms = metrics.isometric_rms;
+    } catch (const std::exception& e) {
+        r.error = e.what();
+    }
+    auto t1 = std::chrono::high_resolution_clock::now();
+    r.elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    return r;
+}
+
+MethodResult run_slim(const std::vector<uint8_t>& input_glb, int iterations = 50) {
+    MethodResult r;
+    r.method = "slim";
+    auto t0 = std::chrono::high_resolution_clock::now();
+    try {
+        auto mesh = meshparam::load_gltf_from_memory(input_glb);
+        int nv = mesh.num_vertices(), nf = mesh.num_faces();
+
+        // SLIM needs a mesh with boundary. If closed, apply BFS seam cut.
+        Eigen::VectorXi bnd;
+        igl::boundary_loop(mesh.F, bnd);
+
+        if (bnd.size() == 0) {
+            r.error = "SLIM requires mesh with boundary (closed mesh — needs seam cut)";
+            auto t1 = std::chrono::high_resolution_clock::now();
+            r.elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            return r;
+        }
+
+        // Initial UV: Tutte embedding (boundary mapped to circle, harmonic interior)
+        Eigen::MatrixXd bnd_uv;
+        igl::map_vertices_to_circle(mesh.V, bnd, bnd_uv);
+
+        Eigen::MatrixXd V_init;
+        igl::harmonic(mesh.V, mesh.F, bnd, bnd_uv, 1, V_init);
+
+        // Check for NaN in initial UV
+        for (int i = 0; i < V_init.rows(); ++i) {
+            if (!std::isfinite(V_init(i, 0)) || !std::isfinite(V_init(i, 1))) {
+                r.error = "Initial UV (harmonic) contains NaN";
+                auto t1 = std::chrono::high_resolution_clock::now();
+                r.elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+                return r;
+            }
+        }
+
+        // SLIM optimization
+        igl::SLIMData slim_data;
+        Eigen::VectorXi b; // no fixed vertices (soft constraints only)
+        Eigen::MatrixXd bc;
+        slim_precompute(mesh.V, mesh.F, V_init, slim_data,
+                        igl::SYMMETRIC_DIRICHLET, b, bc, 0);
+
+        Eigen::MatrixXd UV = slim_solve(slim_data, iterations);
+
+        // Check for NaN
+        for (int i = 0; i < UV.rows(); ++i) {
+            if (!std::isfinite(UV(i, 0)) || !std::isfinite(UV(i, 1))) {
+                r.error = "SLIM produced NaN UVs";
+                auto t1 = std::chrono::high_resolution_clock::now();
+                r.elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+                return r;
+            }
+        }
+
+        // Normalize UV to [0,1]
+        Eigen::Vector2d uv_min = UV.colwise().minCoeff();
+        Eigen::Vector2d uv_max = UV.colwise().maxCoeff();
+        Eigen::Vector2d uv_range = uv_max - uv_min;
+        for (int i = 0; i < 2; ++i) {
+            if (uv_range(i) > 1e-12)
+                UV.col(i) = (UV.col(i).array() - uv_min(i)) / uv_range(i);
+        }
+
+        mesh.UV = UV;
+        mesh.compute_normals();
+
+        auto metrics = meshparam::compute_distortion(mesh.V, mesh.F, mesh.UV);
+
+        // Tag seam vertices from UV discontinuity
+        {
+            mesh.seam = Eigen::VectorXd::Zero(nv);
+            std::unordered_map<int64_t, std::vector<int>> pos_groups;
+            for (int i = 0; i < nv; ++i) {
+                int64_t key = (int64_t(std::round(mesh.V(i,0)*1e4)) * 100000007LL +
+                               int64_t(std::round(mesh.V(i,1)*1e4))) * 100000007LL +
+                               int64_t(std::round(mesh.V(i,2)*1e4));
+                pos_groups[key].push_back(i);
+            }
+            for (auto& [key, group] : pos_groups) {
+                if (group.size() < 2) continue;
+                for (size_t a = 0; a < group.size(); ++a) {
+                    for (size_t b = a+1; b < group.size(); ++b) {
+                        double du = std::abs(mesh.UV(group[a],0) - mesh.UV(group[b],0));
+                        double dv = std::abs(mesh.UV(group[a],1) - mesh.UV(group[b],1));
+                        if (du > 0.001 || dv > 0.001) {
+                            for (int idx : group) mesh.seam(idx) = 1.0;
+                            goto next_slim_group;
+                        }
+                    }
+                }
+                next_slim_group:;
+            }
+        }
+
+        r.glb = meshparam::save_gltf_to_memory(mesh);
+        r.success = true;
+        r.vertices = nv;
+        r.faces = nf;
         r.angle_mean = metrics.mean_angle_distortion;
         r.angle_max = metrics.max_angle_distortion;
         r.area_mean = metrics.mean_area_distortion;
@@ -863,12 +983,14 @@ int main(int argc, char* argv[]) {
         if (forced_method == "auto") {
             // Path A: original healed+welded mesh
             methods_to_run.push_back({"heat", false});
+            methods_to_run.push_back({"slim", false});
             methods_to_run.push_back({"cgal_conformal", false});
             methods_to_run.push_back({"cgal_arap", false});
             methods_to_run.push_back({"cgal_authalic", false});
             // Path B: remeshed (if available)
             if (has_remesh) {
                 methods_to_run.push_back({"heat", true});
+                methods_to_run.push_back({"slim", true});
                 methods_to_run.push_back({"cgal_conformal", true});
                 methods_to_run.push_back({"cgal_arap", true});
                 methods_to_run.push_back({"cgal_authalic", true});
@@ -888,6 +1010,9 @@ int main(int argc, char* argv[]) {
                 std::string suffix = mdef.on_remeshed ? "_remeshed" : "";
                 if (mdef.name == "heat") {
                     results[i] = run_heat(mesh_input, view_weighted);
+                    results[i].method += suffix;
+                } else if (mdef.name == "slim") {
+                    results[i] = run_slim(mesh_input);
                     results[i].method += suffix;
                 } else if (mdef.name == "cgal_conformal") {
                     results[i] = run_cgal(mesh_input, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal" + suffix, view_weighted, mdef.on_remeshed ? std::vector<uint8_t>{} : input_original);
@@ -1142,7 +1267,7 @@ int main(int argc, char* argv[]) {
         std::vector<std::thread> workers;
         std::mutex results_mutex;
 
-        std::vector<std::string> methods = {"heat", "cgal_conformal", "cgal_arap", "cgal_authalic"};
+        std::vector<std::string> methods = {"heat", "slim", "cgal_conformal", "cgal_arap", "cgal_authalic"};
 
         for (auto& tess : tessellations) {
             // Heal + weld
@@ -1157,6 +1282,8 @@ int main(int argc, char* argv[]) {
                     MethodResult r;
                     if (method_name == "heat") {
                         r = run_heat(input_welded, view_weighted);
+                    } else if (method_name == "slim") {
+                        r = run_slim(input_welded);
                     } else if (method_name == "cgal_conformal") {
                         r = run_cgal(input_welded, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal", view_weighted, input_original);
                     } else if (method_name == "cgal_arap") {
