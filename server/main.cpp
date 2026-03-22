@@ -548,6 +548,11 @@ std::vector<uint8_t> draco_compress_glb(const std::vector<uint8_t>& glb_data) {
     auto mesh = meshparam::load_gltf_from_memory(glb_data);
     int nv = mesh.num_vertices(), nf = mesh.num_faces();
     if (nv == 0) return glb_data;
+    std::cerr << "[draco] Input: " << nv << "v " << nf << "f"
+              << " seam=" << mesh.has_seam()
+              << " fid=" << mesh.has_face_ids()
+              << " uv=" << mesh.has_uvs()
+              << " nrm=" << mesh.has_normals() << std::endl;
 
     // Build Draco mesh
     draco::Mesh draco_mesh;
@@ -586,6 +591,30 @@ std::vector<uint8_t> draco_compress_glb(const std::vector<uint8_t>& glb_data) {
         }
     }
 
+    // Add seam attribute if available
+    int seam_att_id = -1;
+    if (mesh.has_seam()) {
+        draco::GeometryAttribute seam_att;
+        seam_att.Init(draco::GeometryAttribute::GENERIC, nullptr, 1, draco::DT_FLOAT32, false, sizeof(float), 0);
+        seam_att_id = draco_mesh.AddAttribute(seam_att, true, nv);
+        for (int i = 0; i < nv; ++i) {
+            float s = (float)mesh.seam(i);
+            draco_mesh.attribute(seam_att_id)->SetAttributeValue(draco::AttributeValueIndex(i), &s);
+        }
+    }
+
+    // Add face ID attribute if available
+    int fid_att_id = -1;
+    if (mesh.has_face_ids()) {
+        draco::GeometryAttribute fid_att;
+        fid_att.Init(draco::GeometryAttribute::GENERIC, nullptr, 1, draco::DT_FLOAT32, false, sizeof(float), 0);
+        fid_att_id = draco_mesh.AddAttribute(fid_att, true, nv);
+        for (int i = 0; i < nv; ++i) {
+            float f = (float)mesh.face_ids(i);
+            draco_mesh.attribute(fid_att_id)->SetAttributeValue(draco::AttributeValueIndex(i), &f);
+        }
+    }
+
     // Set faces
     for (int i = 0; i < nf; ++i) {
         draco::Mesh::Face face;
@@ -601,6 +630,11 @@ std::vector<uint8_t> draco_compress_glb(const std::vector<uint8_t>& glb_data) {
     encoder.SetAttributeQuantization(draco::GeometryAttribute::POSITION, 14);
     encoder.SetAttributeQuantization(draco::GeometryAttribute::NORMAL, 10);
     encoder.SetAttributeQuantization(draco::GeometryAttribute::TEX_COORD, 12);
+    // GENERIC attributes (seam, face_id) — low precision is fine
+    if (seam_att_id >= 0)
+        encoder.SetAttributeQuantization(seam_att_id, 1); // just 0 or 1
+    if (fid_att_id >= 0)
+        encoder.SetAttributeQuantization(fid_att_id, 8); // up to 256 faces
 
     draco::EncoderBuffer buffer;
     auto status = encoder.EncodeMeshToBuffer(draco_mesh, &buffer);
@@ -619,25 +653,44 @@ std::vector<uint8_t> draco_compress_glb(const std::vector<uint8_t>& glb_data) {
     std::string json_str;
     {
         std::ostringstream js;
+        // Build accessor list and attribute map dynamically
+        int acc_idx = 0;
+        struct AttrDef { std::string name; int draco_id; std::string type; bool has_minmax; };
+        std::vector<AttrDef> attrs;
+        attrs.push_back({"POSITION", pos_att_id, "VEC3", true});
+        if (nrm_att_id >= 0) attrs.push_back({"NORMAL", nrm_att_id, "VEC3", false});
+        if (uv_att_id >= 0) attrs.push_back({"TEXCOORD_0", uv_att_id, "VEC2", false});
+        if (seam_att_id >= 0) attrs.push_back({"_SEAM", seam_att_id, "SCALAR", false});
+        if (fid_att_id >= 0) attrs.push_back({"_FACE_ID", fid_att_id, "SCALAR", false});
+
         js << "{\"asset\":{\"version\":\"2.0\",\"generator\":\"meshparam+draco\"},"
            << "\"extensionsUsed\":[\"KHR_draco_mesh_compression\"],"
            << "\"extensionsRequired\":[\"KHR_draco_mesh_compression\"],"
            << "\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
            << "\"meshes\":[{\"primitives\":[{"
-           << "\"attributes\":{\"POSITION\":0";
-        if (nrm_att_id >= 0) js << ",\"NORMAL\":1";
-        if (uv_att_id >= 0) js << ",\"TEXCOORD_0\":" << (nrm_att_id >= 0 ? 2 : 1);
+           << "\"attributes\":{";
+        for (size_t i = 0; i < attrs.size(); ++i) {
+            if (i > 0) js << ",";
+            js << "\"" << attrs[i].name << "\":" << i;
+        }
         js << "},\"mode\":4,"
            << "\"extensions\":{\"KHR_draco_mesh_compression\":{"
-           << "\"bufferView\":0,\"attributes\":{\"POSITION\":" << pos_att_id;
-        if (nrm_att_id >= 0) js << ",\"NORMAL\":" << nrm_att_id;
-        if (uv_att_id >= 0) js << ",\"TEXCOORD_0\":" << uv_att_id;
+           << "\"bufferView\":0,\"attributes\":{";
+        for (size_t i = 0; i < attrs.size(); ++i) {
+            if (i > 0) js << ",";
+            js << "\"" << attrs[i].name << "\":" << attrs[i].draco_id;
+        }
         js << "}}}}]}],"
-           << "\"accessors\":[{\"componentType\":5126,\"count\":" << nv << ",\"type\":\"VEC3\","
-           << "\"min\":[" << mesh.V.col(0).minCoeff() << "," << mesh.V.col(1).minCoeff() << "," << mesh.V.col(2).minCoeff() << "],"
-           << "\"max\":[" << mesh.V.col(0).maxCoeff() << "," << mesh.V.col(1).maxCoeff() << "," << mesh.V.col(2).maxCoeff() << "]}";
-        if (nrm_att_id >= 0) js << ",{\"componentType\":5126,\"count\":" << nv << ",\"type\":\"VEC3\"}";
-        if (uv_att_id >= 0) js << ",{\"componentType\":5126,\"count\":" << nv << ",\"type\":\"VEC2\"}";
+           << "\"accessors\":[";
+        for (size_t i = 0; i < attrs.size(); ++i) {
+            if (i > 0) js << ",";
+            js << "{\"componentType\":5126,\"count\":" << nv << ",\"type\":\"" << attrs[i].type << "\"";
+            if (attrs[i].has_minmax) {
+                js << ",\"min\":[" << mesh.V.col(0).minCoeff() << "," << mesh.V.col(1).minCoeff() << "," << mesh.V.col(2).minCoeff() << "]"
+                   << ",\"max\":[" << mesh.V.col(0).maxCoeff() << "," << mesh.V.col(1).maxCoeff() << "," << mesh.V.col(2).maxCoeff() << "]";
+            }
+            js << "}";
+        }
         js << "],\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":" << draco_size << "}],"
            << "\"buffers\":[{\"byteLength\":" << draco_size << "}]}";
         json_str = js.str();
@@ -921,14 +974,18 @@ int main(int argc, char* argv[]) {
         }
         all << "]";
 
-        // Optionally Draco-compress successful results
+        // Draco compress the best result (which has seam + face_ids after UV remap)
 #ifdef HAS_DRACO
-        for (auto& r : results) {
-            if (r.success && !r.glb.empty()) {
-                r.glb = draco_compress_glb(r.glb);
+        if (!best.glb.empty()) {
+            best.glb = draco_compress_glb(best.glb);
+            results[best_idx].glb = best.glb;
+        }
+        // Also compress other successful results for session access
+        for (size_t i = 0; i < results.size(); ++i) {
+            if ((int)i != best_idx && results[i].success && !results[i].glb.empty()) {
+                results[i].glb = draco_compress_glb(results[i].glb);
             }
         }
-        if (!best.glb.empty()) best.glb = results[best_idx].glb; // update best ref
 #endif
 
         // Store all results in a session for client picking
