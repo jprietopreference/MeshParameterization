@@ -400,14 +400,15 @@ MethodResult run_cgal(const std::vector<uint8_t>& input_glb, cgalparam::ParamMet
                     }
                 }
                 if (face_ids.size() > 0) {
-                    // TODO: Silhouette seam cutting causes CGAL segfault on complex paths.
-                    // The analysis is correct (62 silhouette vertices found) but
-                    // cut_along_path creates inconsistent halfedge connectivity.
-                    // Fall back to BFS for now.
-                    std::cout << "[broker] Silhouette seam analysis done, using BFS cut (silhouette cut WIP)" << std::endl;
-                    if (CGAL::is_closed(sm)) {
-                        auto cut = cgalparam::cut_to_disk(sm);
+                    try {
+                        auto cut = cgalparam::cut_brep_silhouette(sm, orig.V, orig.N, orig.F, face_ids);
                         sm = cut.cut_mesh;
+                    } catch (const std::exception& e) {
+                        std::cerr << "[broker] Silhouette cut exception: " << e.what() << ", fallback to BFS" << std::endl;
+                        if (CGAL::is_closed(sm)) {
+                            auto cut = cgalparam::cut_to_disk(sm);
+                            sm = cut.cut_mesh;
+                        }
                     }
                 } else {
                     std::cerr << "[broker] No _FACE_ID in input, using BFS seam" << std::endl;

@@ -37,13 +37,15 @@ SeamCutResult cut_to_disk(const SurfaceMesh& mesh);
 /// @param orig_N  Original split-vertex normals (n_orig x 3)
 /// @param orig_F  Original split-vertex faces (m x 3)
 /// @param orig_face_ids  Per-vertex OCC face ID (n_orig x 1)
-/// @param z_threshold  Z-component threshold for "front" OCC face (default 0.3)
+/// @param z_threshold  Z-component threshold below which an OCC face is
+///        considered "back-facing". Default -0.1: only strictly backward faces
+///        are on the "back" side of the seam. Front + perpendicular stay together.
 /// @returns Cut mesh, or fallback to BFS if no suitable boundary found
 SeamCutResult cut_brep_silhouette(const SurfaceMesh& mesh,
                                    const Eigen::MatrixXd& orig_V,
                                    const Eigen::MatrixXd& orig_N,
                                    const Eigen::MatrixXi& orig_F,
                                    const Eigen::VectorXd& orig_face_ids,
-                                   double z_threshold = 0.3);
+                                   double z_threshold = -0.1);
 
 } // namespace cgalparam

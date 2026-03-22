@@ -311,18 +311,21 @@ SeamCutResult cut_brep_silhouette(const SurfaceMesh& input_mesh,
         occ_face_z_sum[fid].first += orig_N(i, 2);
         occ_face_z_sum[fid].second += 1;
     }
-    std::map<int, bool> occ_face_is_front; // true if Z+ facing
+    // Classify each OCC face: "back" = avg normal Z < threshold (strictly backward).
+    // Front + perpendicular faces stay on the same side (no seam between them).
+    // The seam only wraps around the back-facing region.
+    std::map<int, bool> occ_face_is_back; // true if strictly back-facing
     for (auto& [fid, p] : occ_face_z_sum) {
         double avg_z = p.first / p.second;
-        occ_face_is_front[fid] = (avg_z > z_threshold);
+        occ_face_is_back[fid] = (avg_z < z_threshold);
     }
 
     int n_front = 0, n_back = 0;
-    for (auto& [fid, is_front] : occ_face_is_front) {
-        if (is_front) n_front++; else n_back++;
+    for (auto& [fid, is_back] : occ_face_is_back) {
+        if (is_back) n_back++; else n_front++;
     }
-    std::cout << "[seam_brep] OCC faces: " << occ_face_is_front.size()
-              << " (Z+ front: " << n_front << ", other: " << n_back << ")" << std::endl;
+    std::cout << "[seam_brep] OCC faces: " << occ_face_is_back.size()
+              << " (front+perp: " << n_front << ", back Z-: " << n_back << ")" << std::endl;
 
     // Map original triangle -> OCC face ID (from first vertex of each triangle)
     std::vector<int> orig_tri_face_id(orig_nf);
@@ -348,19 +351,19 @@ SeamCutResult cut_brep_silhouette(const SurfaceMesh& input_mesh,
         pos_to_face_ids[key].insert(static_cast<int>(orig_face_ids(i)));
     }
 
-    // A position is a B-Rep silhouette vertex if it touches both Z+ and non-Z+ OCC faces
+    // A position is a seam vertex if it touches both back-facing and non-back-facing OCC faces
     std::set<PosKey> silhouette_positions;
     for (auto& [key, fids] : pos_to_face_ids) {
         if (fids.size() < 2) continue;
-        bool has_front = false, has_back = false;
+        bool has_non_back = false, has_back = false;
         for (int fid : fids) {
-            if (occ_face_is_front[fid]) has_front = true;
-            else has_back = true;
+            if (occ_face_is_back[fid]) has_back = true;
+            else has_non_back = true;
         }
-        if (has_front && has_back) silhouette_positions.insert(key);
+        if (has_non_back && has_back) silhouette_positions.insert(key);
     }
 
-    std::cout << "[seam_brep] Silhouette positions (Z+ meets non-Z+): "
+    std::cout << "[seam_brep] Seam positions (front/perp meets back Z-): "
               << silhouette_positions.size() << std::endl;
 
     if (silhouette_positions.size() < 3) {
@@ -430,47 +433,29 @@ SeamCutResult cut_brep_silhouette(const SurfaceMesh& input_mesh,
         return cut_to_disk(input_mesh);
     }
 
-    // Check if the silhouette path forms a loop (first == last, or first connects
-    // back to last via seam edges). A loop splits the mesh into two disconnected
-    // pieces — we need an OPEN path for cut_along_path to work correctly.
-    bool is_loop = false;
+    // Use Dijkstra between two well-separated seam poles.
+    // This gives a short, valid mesh path that crosses the seam boundary,
+    // ensuring the back-facing region gets separated from the front.
+    // We pick the two endpoints of the longest seam path as poles.
+    VD pole_a = best_path.front();
+    VD pole_b = best_path.back();
+
+    // If the path is a loop (endpoints are close), pick opposite points
     {
-        ED closing_edge = find_edge(input_mesh, best_path.front(), best_path.back());
-        if (closing_edge != SurfaceMesh::null_edge() && seam_edges.count(closing_edge))
-            is_loop = true;
-    }
-
-    // For a loop: use Dijkstra between two well-separated points on the loop
-    // to get an open path that follows the silhouette boundary.
-    // For an open path: use the path directly.
-    std::vector<VD> cut_path;
-
-    if (is_loop) {
-        // Pick two points roughly opposite on the loop
-        VD pole_a = best_path[0];
-        VD pole_b = best_path[best_path.size() / 2];
-        cut_path = dijkstra_path(input_mesh, pole_a, pole_b);
-        std::cout << "[seam_brep] Loop detected (" << best_path.size()
-                  << " verts). Dijkstra open path: " << cut_path.size() << " verts" << std::endl;
-    } else {
-        // Open path — verify edge connectivity and bridge gaps
-        cut_path.push_back(best_path[0]);
-        for (size_t i = 1; i < best_path.size(); ++i) {
-            ED e = find_edge(input_mesh, best_path[i-1], best_path[i]);
-            if (e != SurfaceMesh::null_edge()) {
-                cut_path.push_back(best_path[i]);
-            } else {
-                auto bridge = dijkstra_path(input_mesh, best_path[i-1], best_path[i]);
-                for (size_t j = 1; j < bridge.size(); ++j)
-                    cut_path.push_back(bridge[j]);
-            }
+        ED closing = find_edge(input_mesh, pole_a, pole_b);
+        if (closing != SurfaceMesh::null_edge() || best_path.size() > 10) {
+            pole_b = best_path[best_path.size() / 2];
         }
-        std::cout << "[seam_brep] Open path: " << cut_path.size()
-                  << " verts (from " << best_path.size() << " silhouette verts)" << std::endl;
     }
+
+    auto cut_path = dijkstra_path(input_mesh, pole_a, pole_b);
+
+    std::cout << "[seam_brep] Dijkstra cut between seam poles: " << cut_path.size()
+              << " verts (poles at positions " << static_cast<int>(pole_a)
+              << " and " << static_cast<int>(pole_b) << ")" << std::endl;
 
     if (cut_path.size() < 2) {
-        std::cout << "[seam_brep] Invalid path, falling back to BFS" << std::endl;
+        std::cout << "[seam_brep] No valid path, falling back to BFS" << std::endl;
         return cut_to_disk(input_mesh);
     }
 
