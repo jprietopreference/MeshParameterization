@@ -371,8 +371,10 @@ MethodResult run_cgal(const std::vector<uint8_t>& input_glb, cgalparam::ParamMet
         auto tri = cgalparam::load_gltf_from_memory(input_glb);
         auto sm = cgalparam::to_cgal_mesh(tri);
 
-        if (CGAL::is_closed(sm)) {
-            if (use_silhouette_seam && !orig_glb_for_seam.empty()) {
+        if (use_silhouette_seam && !orig_glb_for_seam.empty()) {
+            // Always apply silhouette seam when view-weighted, even if mesh has
+            // small boundary holes from healing. The silhouette seam ensures the
+            // front-facing side gets a continuous UV patch.
                 auto orig = meshparam::load_gltf_from_memory(orig_glb_for_seam);
                 // Try to read _FACE_ID from original GLB
                 Eigen::VectorXd face_ids;
@@ -401,14 +403,15 @@ MethodResult run_cgal(const std::vector<uint8_t>& input_glb, cgalparam::ParamMet
                     auto cut = cgalparam::cut_brep_silhouette(sm, orig.V, orig.N, orig.F, face_ids);
                     sm = cut.cut_mesh;
                 } else {
-                    std::cout << "[broker] No _FACE_ID in input, using BFS seam" << std::endl;
-                    auto cut = cgalparam::cut_to_disk(sm);
-                    sm = cut.cut_mesh;
+                    std::cerr << "[broker] No _FACE_ID in input, using BFS seam" << std::endl;
+                    if (CGAL::is_closed(sm)) {
+                        auto cut = cgalparam::cut_to_disk(sm);
+                        sm = cut.cut_mesh;
+                    }
                 }
-            } else {
-                auto cut = cgalparam::cut_to_disk(sm);
-                sm = cut.cut_mesh;
-            }
+        } else if (CGAL::is_closed(sm)) {
+            auto cut = cgalparam::cut_to_disk(sm);
+            sm = cut.cut_mesh;
         }
 
         Eigen::MatrixXd UV = cgalparam::parameterize(sm, method);

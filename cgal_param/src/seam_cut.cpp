@@ -293,17 +293,9 @@ SeamCutResult cut_brep_silhouette(const SurfaceMesh& input_mesh,
                                    const Eigen::MatrixXi& orig_F,
                                    const Eigen::VectorXd& orig_face_ids,
                                    double z_threshold) {
-    // If already has boundary, use existing cut
-    HD border = CGAL::Polygon_mesh_processing::longest_border(input_mesh).first;
-    if (border != SurfaceMesh::null_halfedge()) {
-        SeamCutResult result;
-        result.cut_mesh = input_mesh;
-        result.original_vertex_count = static_cast<int>(input_mesh.number_of_vertices());
-        result.vertex_map.resize(result.original_vertex_count);
-        for (int i = 0; i < result.original_vertex_count; ++i)
-            result.vertex_map[i] = i;
-        return result;
-    }
+    // Always apply silhouette seam, even if mesh already has a small boundary
+    // from healed degenerate triangles. The silhouette cut ensures front-facing
+    // faces get a continuous UV patch.
 
     // Use OCC face IDs to classify each B-Rep face as Z+ (front) or not.
     // Then find welded mesh edges where adjacent triangles belong to
@@ -438,20 +430,32 @@ SeamCutResult cut_brep_silhouette(const SurfaceMesh& input_mesh,
         return cut_to_disk(input_mesh);
     }
 
-    // The silhouette path may not be a simple mesh path (edges may not exist
-    // between all consecutive vertices). Use Dijkstra between the endpoints
-    // to find a valid mesh path that follows the silhouette.
-    VD pole_a = best_path.front();
-    VD pole_b = best_path.back();
-    auto path = dijkstra_path(input_mesh, pole_a, pole_b);
+    // The silhouette path is built from edges where both endpoints are silhouette
+    // vertices. Verify consecutive vertices are connected by mesh edges.
+    // If not, bridge gaps with Dijkstra segments.
+    std::vector<VD> valid_path;
+    valid_path.push_back(best_path[0]);
+    for (size_t i = 1; i < best_path.size(); ++i) {
+        ED e = find_edge(input_mesh, best_path[i-1], best_path[i]);
+        if (e != SurfaceMesh::null_edge()) {
+            valid_path.push_back(best_path[i]);
+        } else {
+            // Bridge the gap with Dijkstra
+            auto bridge = dijkstra_path(input_mesh, best_path[i-1], best_path[i]);
+            for (size_t j = 1; j < bridge.size(); ++j)
+                valid_path.push_back(bridge[j]);
+        }
+    }
 
-    if (path.size() < 2) {
-        std::cout << "[seam_brep] No Dijkstra path, falling back to BFS" << std::endl;
+    std::cout << "[seam_brep] Cutting along silhouette path: " << valid_path.size()
+              << " vertices (from " << best_path.size() << " silhouette vertices)" << std::endl;
+
+    if (valid_path.size() < 2) {
+        std::cout << "[seam_brep] Invalid path, falling back to BFS" << std::endl;
         return cut_to_disk(input_mesh);
     }
 
-    std::cout << "[seam_brep] Cutting along silhouette path: " << path.size() << " vertices" << std::endl;
-    return cut_along_path(input_mesh, path);
+    return cut_along_path(input_mesh, valid_path);
 }
 
 } // namespace cgalparam
