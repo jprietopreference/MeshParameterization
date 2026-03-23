@@ -113,8 +113,8 @@ async function loadGlb(glbBuffer, applyChecker = false) {
             }
 
             if (currentMesh) showMeshQuality(currentMesh);
-            // Auto-show color-coded B-Rep edges on first mesh (has all shared vertices)
-            if (currentMesh) showColorCodedEdges(currentMesh);
+            // Auto-show color-coded B-Rep edges on ALL render meshes
+            for (const mesh of renderMeshes) showColorCodedEdges(mesh);
         }
     } finally { URL.revokeObjectURL(url); }
 }
@@ -604,7 +604,7 @@ function injectCustomAttrs(mesh, glbBuffer) {
         while (binStart % 4) binStart++;
         binStart += 8;
 
-        for (const attrName of ['_SEAM', '_FACE_ID']) {
+        for (const attrName of ['_SEAM', '_FACE_ID', '_EDGE_TYPE']) {
             const accIdx = prim.attributes[attrName];
             if (accIdx == null) continue;
             const acc = json.accessors[accIdx];
@@ -660,7 +660,8 @@ function showSeamLines(mesh) {
     }
 }
 
-// Color-coded B-Rep edges: red (seam), orange (other Z-perp), yellow (rest)
+// Color-coded B-Rep edges from OCC _EDGE_TYPE attribute:
+// 1=seam (red), 2=Z-perp (orange), 3=other B-Rep (yellow)
 function showColorCodedEdges(mesh) {
     // Dispose old overlays
     for (const name of ['_edges_red', '_edges_orange', '_edges_yellow'])
@@ -669,47 +670,33 @@ function showColorCodedEdges(mesh) {
     if (!mesh) return;
     const positions = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
     const indices = mesh.getIndices();
-    const faceIdData = mesh.getVerticesData('_FACE_ID');
-    const seamData = mesh.getVerticesData('_SEAM');
-    if (!positions || !indices || !faceIdData) return;
+    const edgeTypeData = mesh.getVerticesData('_EDGE_TYPE');
+    if (!positions || !indices || !edgeTypeData) return;
 
-    // 1. Find all B-Rep boundary edges
-    const q = v => Math.round(v * 1e4);
-    const pk = i => `${q(positions[i*3])}_${q(positions[i*3+1])}_${q(positions[i*3+2])}`;
-    const edgeMap = new Map();
+    // Draw edges where both endpoints have the same non-zero _EDGE_TYPE
+    const redPts = [], orangePts = [], yellowPts = [];
+    const seen = new Set(); // deduplicate edges
+
     for (let t = 0; t < indices.length; t += 3) {
-        const fid = faceIdData[indices[t]];
         for (let e = 0; e < 3; e++) {
             const a = indices[t + e], b = indices[t + (e + 1) % 3];
-            const ka = pk(a), kb = pk(b);
-            const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-            if (!edgeMap.has(key)) edgeMap.set(key, []);
-            edgeMap.get(key).push({ fid, a, b });
+            const eta = edgeTypeData[a], etb = edgeTypeData[b];
+            if (eta < 0.5 || etb < 0.5) continue; // at least one vertex is interior
+            // Use the highest-priority type (lowest number: 1 > 2 > 3)
+            const etype = Math.min(Math.round(eta), Math.round(etb));
+            // Deduplicate by sorted vertex pair
+            const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+
+            const pts = etype === 1 ? redPts : etype === 2 ? orangePts : yellowPts;
+            pts.push(
+                new BABYLON.Vector3(positions[a*3], positions[a*3+1], positions[a*3+2]),
+                new BABYLON.Vector3(positions[b*3], positions[b*3+1], positions[b*3+2]),
+            );
         }
     }
 
-    // Collect boundary edges and classify
-    const redPts = [], orangePts = [], yellowPts = [];
-    const zTol = 0.5;
-
-    for (const [, entries] of edgeMap) {
-        if (entries.length < 2) continue;
-        const fids = new Set(entries.map(e => e.fid));
-        if (fids.size <= 1) continue;
-
-        const { a, b } = entries[0];
-        const za = positions[a*3+2], zb = positions[b*3+2];
-        const isSeam = seamData && seamData[a] > 0.5 && seamData[b] > 0.5;
-        const isZPerp = Math.abs(za - zb) < zTol;
-
-        const pts = isSeam ? redPts : isZPerp ? orangePts : yellowPts;
-        pts.push(
-            new BABYLON.Vector3(positions[a*3], positions[a*3+1], positions[a*3+2]),
-            new BABYLON.Vector3(positions[b*3], positions[b*3+1], positions[b*3+2]),
-        );
-    }
-
-    // Draw each color layer
     const drawLines = (name, pts, color) => {
         if (pts.length === 0) return;
         const lines = BABYLON.MeshBuilder.CreateLineSystem(name, {

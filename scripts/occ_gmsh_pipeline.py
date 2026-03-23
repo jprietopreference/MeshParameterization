@@ -350,23 +350,52 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
         top_face_tags = set()
         bot_face_tags = set()
 
-    # Collect mesh node tags on seam edges
+    # Classify ALL B-Rep edge nodes by type from OCC topology:
+    # 1 = seam (red), 2 = Z-perp non-seam (orange), 3 = other B-Rep (yellow), 0 = interior
+    node_edge_type = {}  # node_tag -> edge_type (highest priority wins)
     seam_node_tags = set()
-    for edge_tag in seam_edge_tags:
+
+    all_brep_edges_for_classify = gmsh.model.occ.getEntities(dim=1)
+    # Determine which edges are Z-perpendicular
+    z_perp_edge_set = set()
+    for _, tag_e in all_brep_edges_for_classify:
+        pts = gmsh.model.getBoundary([(1, tag_e)], oriented=False)
+        if len(pts) >= 2:
+            p1 = gmsh.model.getValue(0, pts[0][1], [])
+            p2 = gmsh.model.getValue(0, pts[1][1], [])
+            if abs(p1[2] - p2[2]) * scale <= z_tol_seam:
+                z_perp_edge_set.add(tag_e)
+
+    for _, tag_e in all_brep_edges_for_classify:
+        if tag_e in seam_edge_tags:
+            etype = 1  # seam (red)
+        elif tag_e in z_perp_edge_set:
+            etype = 2  # Z-perp (orange)
+        else:
+            etype = 3  # other B-Rep (yellow)
         try:
-            ntags, _, _ = gmsh.model.mesh.getNodes(1, edge_tag, includeBoundary=True)
-            seam_node_tags.update(int(nt) for nt in ntags)
+            ntags, _, _ = gmsh.model.mesh.getNodes(1, tag_e, includeBoundary=True)
+            for nt in ntags:
+                nt_int = int(nt)
+                # Higher priority type wins (1 > 2 > 3)
+                if nt_int not in node_edge_type or etype < node_edge_type[nt_int]:
+                    node_edge_type[nt_int] = etype
+                if etype == 1:
+                    seam_node_tags.add(nt_int)
         except:
             pass
-    if seam_node_tags:
-        print(f"[pipeline] Seam nodes: {len(seam_node_tags)}")
+
+    n_seam = sum(1 for v in node_edge_type.values() if v == 1)
+    n_zperp = sum(1 for v in node_edge_type.values() if v == 2)
+    n_other = sum(1 for v in node_edge_type.values() if v == 3)
+    print(f"[pipeline] B-Rep edge nodes: {n_seam} seam, {n_zperp} Z-perp, {n_other} other")
 
     # 6. Extract mesh per face group (top/bottom if seam found, else all together)
     surfaces = gmsh.model.getEntities(dim=2)
 
     def extract_faces(face_tags_filter=None):
-        """Extract mesh from a subset of OCC faces. Returns verts, normals, face_ids, seam, tris."""
-        verts, normals, face_ids, seam_flags, tris = [], [], [], [], []
+        """Extract mesh from a subset of OCC faces. Returns verts, normals, face_ids, seam, edge_type, tris."""
+        verts, normals, face_ids, seam_flags, edge_types, tris = [], [], [], [], [], []
         for face_idx, (dim, tag) in enumerate(surfaces):
             if face_tags_filter is not None and tag not in face_tags_filter:
                 continue
@@ -397,19 +426,20 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
                     normals.extend([0, 0, 1])
                 face_ids.append(float(face_idx))
                 seam_flags.append(1.0 if int(nt) in seam_node_tags else 0.0)
+                edge_types.append(float(node_edge_type.get(int(nt), 0)))
             for i in range(0, len(tri_node_tags), 3):
                 n0, n1, n2 = int(tri_node_tags[i]), int(tri_node_tags[i+1]), int(tri_node_tags[i+2])
                 if n0 in tag_to_local and n1 in tag_to_local and n2 in tag_to_local:
                     tris.extend([tag_to_local[n0], tag_to_local[n1], tag_to_local[n2]])
-        return verts, normals, face_ids, seam_flags, tris
+        return verts, normals, face_ids, seam_flags, edge_types, tris
 
     # Determine if we split into two primitives or use one
     has_split = bool(seam_edge_tags) and bool(top_face_tags) and bool(bot_face_tags)
     if has_split:
         top_data = extract_faces(top_face_tags)
         bot_data = extract_faces(bot_face_tags)
-        print(f"[pipeline] Top: {len(top_data[0])//3}v {len(top_data[4])//3}f, "
-              f"Bottom: {len(bot_data[0])//3}v {len(bot_data[4])//3}f")
+        print(f"[pipeline] Top: {len(top_data[0])//3}v {len(top_data[5])//3}f, "
+              f"Bottom: {len(bot_data[0])//3}v {len(bot_data[5])//3}f")
     else:
         top_data = extract_faces(None)
         bot_data = None
@@ -419,27 +449,28 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
     all_normals = top_data[1]
     all_face_ids = top_data[2]
     all_seam = top_data[3]
-    all_tris = top_data[4]
+    all_edge_types = top_data[4]
+    all_tris = top_data[5]
 
     gmsh.finalize()
 
     def write_glb(path, parts):
         """Write GLB with one mesh containing one or two primitives.
-        parts = [(verts, normals, face_ids, seam, tris), ...]
-        All parts share a single vertex buffer (concatenated), each has its own index buffer.
+        parts = [(verts, normals, face_ids, seam, edge_types, tris), ...]
         """
         # Concatenate all vertex data
-        all_v, all_n, all_fid, all_s = [], [], [], []
+        all_v, all_n, all_fid, all_s, all_et = [], [], [], [], []
         part_offsets = []  # (vert_offset, num_verts, num_tris) per part
         all_idx_parts = []
         vert_offset = 0
-        for verts, normals, face_ids, seam_flags, tris in parts:
+        for verts, normals, face_ids, seam_flags, edge_types, tris in parts:
             nv_part = len(verts) // 3
             nf_part = len(tris) // 3
             all_v.extend(verts)
             all_n.extend(normals)
             all_fid.extend(face_ids)
             all_s.extend(seam_flags)
+            all_et.extend(edge_types)
             # Offset indices by accumulated vertex count
             all_idx_parts.append(np.array(tris, dtype=np.uint32) + vert_offset)
             part_offsets.append((vert_offset, nv_part, nf_part))
@@ -454,17 +485,19 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
         N = np.array(all_n, dtype=np.float32)
         FID = np.array(all_fid, dtype=np.float32)
         SEAM = np.array(all_s, dtype=np.float32)
+        ET = np.array(all_et, dtype=np.float32)
 
         pos_data = V.tobytes()
         nrm_data = N.tobytes()
         fid_data = FID.tobytes()
         seam_data = SEAM.tobytes()
+        et_data = ET.tobytes()
 
         # Index buffers per part
         idx_datas = [p.tobytes() for p in all_idx_parts]
 
-        # Build buffer: pos + nrm + fid + seam + idx0 [+ idx1]
-        buf = pos_data + nrm_data + fid_data + seam_data
+        # Build buffer: pos + nrm + fid + seam + edge_type + idx0 [+ idx1]
+        buf = pos_data + nrm_data + fid_data + seam_data + et_data
         for idata in idx_datas:
             buf += idata
         while len(buf) % 4:
@@ -476,23 +509,26 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
         nrm_off = len(pos_data)
         fid_off = nrm_off + len(nrm_data)
         seam_off = fid_off + len(fid_data)
+        et_off = seam_off + len(seam_data)
 
-        # Shared vertex attributes: accessors 0-3
+        # Shared vertex attributes: accessors 0-4
         accessors = [
             {"bufferView": 0, "componentType": 5126, "count": total_nv, "type": "VEC3", "min": mn, "max": mx},
             {"bufferView": 1, "componentType": 5126, "count": total_nv, "type": "VEC3"},
             {"bufferView": 2, "componentType": 5126, "count": total_nv, "type": "SCALAR"},
             {"bufferView": 3, "componentType": 5126, "count": total_nv, "type": "SCALAR"},
+            {"bufferView": 4, "componentType": 5126, "count": total_nv, "type": "SCALAR"},
         ]
         buffer_views = [
             {"buffer": 0, "byteOffset": 0, "byteLength": len(pos_data), "target": 34962},
             {"buffer": 0, "byteOffset": nrm_off, "byteLength": len(nrm_data), "target": 34962},
             {"buffer": 0, "byteOffset": fid_off, "byteLength": len(fid_data), "target": 34962},
             {"buffer": 0, "byteOffset": seam_off, "byteLength": len(seam_data), "target": 34962},
+            {"buffer": 0, "byteOffset": et_off, "byteLength": len(et_data), "target": 34962},
         ]
 
         # Per-part index buffers + primitives
-        idx_base_off = seam_off + len(seam_data)
+        idx_base_off = et_off + len(et_data)
         primitives = []
         for pi, (vo, nv_p, nf_p) in enumerate(part_offsets):
             acc_idx = len(accessors)
@@ -504,7 +540,7 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
                 "bufferView": bv_idx, "componentType": 5125, "count": nf_p * 3, "type": "SCALAR"
             })
             primitives.append({
-                "attributes": {"POSITION": 0, "NORMAL": 1, "_FACE_ID": 2, "_SEAM": 3},
+                "attributes": {"POSITION": 0, "NORMAL": 1, "_FACE_ID": 2, "_SEAM": 3, "_EDGE_TYPE": 4},
                 "indices": acc_idx, "mode": 4
             })
             idx_base_off += len(idx_datas[pi])
