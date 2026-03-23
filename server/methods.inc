@@ -197,6 +197,17 @@ std::vector<uint8_t> remesh_isotropic(const std::string& remesh_cli, const std::
     std::remove(tmp_out.c_str());
     return result;
 }
+// Normalize UVs to [0,1] with uniform scaling (preserves aspect ratio)
+void normalize_uv_uniform(Eigen::MatrixXd& UV) {
+    Eigen::Vector2d mn = UV.colwise().minCoeff();
+    Eigen::Vector2d mx = UV.colwise().maxCoeff();
+    double range = std::max(mx(0) - mn(0), mx(1) - mn(1));
+    if (range > 1e-12) {
+        UV.col(0) = (UV.col(0).array() - mn(0)) / range;
+        UV.col(1) = (UV.col(1).array() - mn(1)) / range;
+    }
+}
+
 // --- MethodResult and run_* functions ---
 struct MethodResult {
     std::string method;
@@ -359,13 +370,7 @@ MethodResult run_lscm(const std::vector<uint8_t>& input_glb) {
             }
         }
 
-        // Normalize UV
-        Eigen::Vector2d mn = UV.colwise().minCoeff();
-        Eigen::Vector2d mx = UV.colwise().maxCoeff();
-        for (int i = 0; i < 2; ++i) {
-            double range = mx(i) - mn(i);
-            if (range > 1e-12) UV.col(i) = (UV.col(i).array() - mn(i)) / range;
-        }
+        normalize_uv_uniform(UV);
 
         mesh.UV = UV;
         mesh.compute_normals();
@@ -418,8 +423,7 @@ MethodResult run_igl_arap(const std::vector<uint8_t>& input_glb) {
 
             for(int i=0;i<UV.rows();++i) if(!std::isfinite(UV(i,0))||!std::isfinite(UV(i,1))){r.error="ARAP NaN";goto end_arap;}
 
-            Eigen::Vector2d mn=UV.colwise().minCoeff(), mx=UV.colwise().maxCoeff();
-            for(int i=0;i<2;++i){double rng=mx(i)-mn(i);if(rng>1e-12)UV.col(i)=(UV.col(i).array()-mn(i))/rng;}
+            normalize_uv_uniform(UV);
 
             mesh.UV=UV; mesh.compute_normals();
             auto metrics=meshparam::compute_distortion(mesh.V,mesh.F,mesh.UV);
@@ -501,8 +505,7 @@ MethodResult run_stein(const std::vector<uint8_t>& input_glb) {
             for(int i=0;i<W.rows();++i) if(!std::isfinite(W(i,0))||!std::isfinite(W(i,1))){r.error="NaN UVs";goto end_stein;}
 
             // Normalize
-            Eigen::Vector2d mn=W.colwise().minCoeff(), mx=W.colwise().maxCoeff();
-            for(int i=0;i<2;++i){double rng=mx(i)-mn(i);if(rng>1e-12)W.col(i)=(W.col(i).array()-mn(i))/rng;}
+            normalize_uv_uniform(W);
 
             mesh.UV=W; mesh.compute_normals();
             auto metrics=meshparam::compute_distortion(mesh.V,mesh.F,mesh.UV);
@@ -590,14 +593,7 @@ MethodResult run_slim(const std::vector<uint8_t>& input_glb, int iterations = 50
             }
         }
 
-        // Normalize UV to [0,1]
-        Eigen::Vector2d uv_min = UV.colwise().minCoeff();
-        Eigen::Vector2d uv_max = UV.colwise().maxCoeff();
-        Eigen::Vector2d uv_range = uv_max - uv_min;
-        for (int i = 0; i < 2; ++i) {
-            if (uv_range(i) > 1e-12)
-                UV.col(i) = (UV.col(i).array() - uv_min(i)) / uv_range(i);
-        }
+        normalize_uv_uniform(UV);
 
         mesh.UV = UV;
         mesh.compute_normals();
@@ -884,14 +880,8 @@ MethodResult run_cm(const std::vector<uint8_t>& input_glb, int iterations = 100)
         }
 
         if (r.error.empty()) {
-            MatX2 uv = Eigen::Map<MatX2>(solver.m_x.data(), solver.m_x.rows() / 2, 2);
-
-            Eigen::Vector2d mn = uv.colwise().minCoeff();
-            Eigen::Vector2d mx = uv.colwise().maxCoeff();
-            for (int i = 0; i < 2; ++i) {
-                double rng = mx(i) - mn(i);
-                if (rng > 1e-12) uv.col(i) = (uv.col(i).array() - mn(i)) / rng;
-            }
+            Eigen::MatrixXd uv = Eigen::Map<MatX2>(solver.m_x.data(), solver.m_x.rows() / 2, 2);
+            normalize_uv_uniform(uv);
 
             mesh.UV = uv;
             mesh.compute_normals();
