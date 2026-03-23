@@ -178,43 +178,93 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
     try:
         best_perim = 0
         best_z = 1e18
-        best_face_tag = -1
         best_edges = []
-        for dim_s, tag_s in gmsh.model.occ.getEntities(dim=2):
-            bnd = gmsh.model.getBoundary([(dim_s, tag_s)], oriented=True, recursive=False)
-            if not bnd:
+
+        # Find closed loops of Z-perpendicular B-Rep edges (not per-face wires).
+        # These loops go around the part cross-section, splitting it in two.
+        from collections import defaultdict as ddict
+
+        # Collect all B-Rep edges where both endpoints share the same Z
+        all_brep_edges = gmsh.model.occ.getEntities(dim=1)
+        z_perp_edges = []
+        for dim_e, tag_e in all_brep_edges:
+            pts = gmsh.model.getBoundary([(1, tag_e)], oriented=False)
+            if len(pts) < 2:
+                continue  # closed curve (circle)
+            p1 = gmsh.model.getValue(0, pts[0][1], [])
+            p2 = gmsh.model.getValue(0, pts[1][1], [])
+            if abs(p1[2] - p2[2]) * scale > z_tol_seam:
                 continue
-            # Get Z coords of all mesh nodes on boundary edges
-            zs = []
-            edge_perim = 0
-            for b in bnd:
-                abs_et = abs(b[1])
-                try:
-                    ntags, coords, _ = gmsh.model.mesh.getNodes(1, abs_et, includeBoundary=True)
-                    for i in range(len(ntags)):
-                        zs.append(coords[i * 3 + 2] * scale)
-                    for i in range(len(ntags) - 1):
-                        dx = (coords[(i+1)*3] - coords[i*3]) * scale
-                        dy = (coords[(i+1)*3+1] - coords[i*3+1]) * scale
-                        dz = (coords[(i+1)*3+2] - coords[i*3+2]) * scale
-                        edge_perim += math.sqrt(dx*dx + dy*dy + dz*dz)
-                except:
-                    pass
-            if not zs or (max(zs) - min(zs)) > z_tol_seam:
-                continue
-            avg_z = sum(zs) / len(zs) if zs else 0
-            # Pick longest perimeter; on tie, pick lower Z (min Z = bottom seam)
-            if (edge_perim > best_perim + 0.1 or
-                (abs(edge_perim - best_perim) <= 0.1 and avg_z < best_z)):
-                best_perim = edge_perim
-                best_z = avg_z
-                best_face_tag = tag_s
-                best_edges = [abs(b[1]) for b in bnd]
+            # Compute meshed length
+            try:
+                ntags, coords, _ = gmsh.model.mesh.getNodes(1, tag_e, includeBoundary=True)
+                edge_len = 0
+                for i in range(len(ntags) - 1):
+                    dx = (coords[(i+1)*3] - coords[i*3]) * scale
+                    dy = (coords[(i+1)*3+1] - coords[i*3+1]) * scale
+                    dz = (coords[(i+1)*3+2] - coords[i*3+2]) * scale
+                    edge_len += math.sqrt(dx*dx + dy*dy + dz*dz)
+            except:
+                edge_len = math.sqrt(sum(((p2[j]-p1[j])*scale)**2 for j in range(3)))
+            avg_z = (p1[2] + p2[2]) / 2.0 * scale
+            z_perp_edges.append((tag_e, pts[0][1], pts[1][1], avg_z, edge_len))
+
+        # Group by Z level (0.1mm buckets)
+        z_groups = ddict(list)
+        for tag_e, p1, p2, z, length in z_perp_edges:
+            z_key = round(z * 10) / 10
+            z_groups[z_key].append((tag_e, p1, p2, length))
+
+        # Trace closed loops per Z level, collect all
+        all_loops = []  # (z, edges, perimeter)
+        for z_key, edge_list in z_groups.items():
+            adj = ddict(list)
+            for tag_e, p1, p2, length in edge_list:
+                adj[p1].append((p2, tag_e, length))
+                adj[p2].append((p1, tag_e, length))
+
+            visited_edges = set()
+            for tag_e, p1, p2, length in edge_list:
+                if tag_e in visited_edges:
+                    continue
+                loop_edges = []
+                loop_perim = 0
+                cur, prev, start = p1, -1, p1
+                closed = False
+                for _ in range(10000):
+                    found = False
+                    for nb, et, el in adj[cur]:
+                        if et in visited_edges or nb == prev:
+                            continue
+                        visited_edges.add(et)
+                        loop_edges.append(et)
+                        loop_perim += el
+                        prev = cur
+                        cur = nb
+                        found = True
+                        if cur == start and len(loop_edges) >= 3:
+                            closed = True
+                        break
+                    if closed or not found:
+                        break
+                if closed and len(loop_edges) >= 3:
+                    all_loops.append((z_key, loop_edges, loop_perim))
+
+        # Pick best: longest perimeter, within 5% tie pick min Z
+        all_loops.sort(key=lambda x: (-x[2], x[0]))
+        if all_loops:
+            top_perim = all_loops[0][2]
+            perim_tol = 1.0  # mm — within 1mm of max, prefer min Z
+            candidates = [l for l in all_loops if l[2] >= top_perim - perim_tol]
+            candidates.sort(key=lambda x: x[0])  # sort by Z ascending
+            best_z = candidates[0][0]
+            best_edges = candidates[0][1]
+            best_perim = candidates[0][2]
 
         if best_edges:
             seam_edge_tags = set(best_edges)
-            print(f"[pipeline] Auto-seam: face {best_face_tag}, "
-                  f"{len(best_edges)} edges, {best_perim:.1f}mm perimeter")
+            print(f"[pipeline] Auto-seam: {len(best_edges)} edges, "
+                  f"{best_perim:.1f}mm perimeter, z={best_z:.2f}mm")
     except Exception as e:
         print(f"[pipeline] Auto-seam detection failed: {e}")
 
