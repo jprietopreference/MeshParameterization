@@ -16,7 +16,7 @@ import numpy as np
 
 
 def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max_edge=None,
-                scale=None, heal=True):
+                scale=None, heal=True, output_back_path=None):
     import gmsh
 
     gmsh.initialize()
@@ -263,10 +263,27 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
 
         if best_edges:
             seam_edge_tags = set(best_edges)
+            seam_z = best_z / scale if scale else best_z  # in OCC units
             print(f"[pipeline] Auto-seam: {len(best_edges)} edges, "
                   f"{best_perim:.1f}mm perimeter, z={best_z:.2f}mm")
+
+            # Classify OCC faces into top (Z >= seam) and bottom (Z < seam)
+            # Use face bounding box centroid Z
+            top_face_tags = set()
+            bot_face_tags = set()
+            for dim_f, tag_f in gmsh.model.occ.getEntities(dim=2):
+                bb = gmsh.model.getBoundingBox(dim_f, tag_f)
+                face_center_z = (bb[2] + bb[5]) / 2.0  # in OCC units
+                if face_center_z >= seam_z:
+                    top_face_tags.add(tag_f)
+                else:
+                    bot_face_tags.add(tag_f)
+            print(f"[pipeline] Split: {len(top_face_tags)} top faces, "
+                  f"{len(bot_face_tags)} bottom faces")
     except Exception as e:
         print(f"[pipeline] Auto-seam detection failed: {e}")
+        top_face_tags = set()
+        bot_face_tags = set()
 
     # Collect mesh node tags on seam edges
     seam_node_tags = set()
@@ -279,142 +296,189 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
     if seam_node_tags:
         print(f"[pipeline] Seam nodes: {len(seam_node_tags)}")
 
-    # 6. Extract mesh with per-face normals and face IDs
+    # 6. Extract mesh per face group (top/bottom if seam found, else all together)
     surfaces = gmsh.model.getEntities(dim=2)
-    all_verts = []
-    all_normals = []
-    all_face_ids = []
-    all_seam = []
-    all_tris = []
 
-    for face_idx, (dim, tag) in enumerate(surfaces):
-        # Get nodes on this surface
-        node_tags, coords, param_coords = gmsh.model.mesh.getNodes(dim, tag, includeBoundary=True)
+    def extract_faces(face_tags_filter=None):
+        """Extract mesh from a subset of OCC faces. Returns verts, normals, face_ids, seam, tris."""
+        verts, normals, face_ids, seam_flags, tris = [], [], [], [], []
+        for face_idx, (dim, tag) in enumerate(surfaces):
+            if face_tags_filter is not None and tag not in face_tags_filter:
+                continue
+            node_tags, coords, param_coords = gmsh.model.mesh.getNodes(dim, tag, includeBoundary=True)
+            if len(node_tags) == 0:
+                continue
+            elem_types, elem_tags_list, elem_node_tags_list = gmsh.model.mesh.getElements(dim, tag)
+            tri_node_tags = None
+            for et, ent in zip(elem_types, elem_node_tags_list):
+                if et == 2:
+                    tri_node_tags = ent
+                    break
+            if tri_node_tags is None or len(tri_node_tags) == 0:
+                continue
+            base = len(verts) // 3
+            tag_to_local = {}
+            for i, nt in enumerate(node_tags):
+                local_idx = base + i
+                tag_to_local[int(nt)] = local_idx
+                verts.extend([coords[i*3]*scale, coords[i*3+1]*scale, coords[i*3+2]*scale])
+                u, v = param_coords[i*2], param_coords[i*2+1]
+                try:
+                    nx, ny, nz = gmsh.model.getNormal(tag, [u, v])
+                    ln = math.sqrt(nx*nx+ny*ny+nz*nz)
+                    if ln > 1e-15: normals.extend([nx/ln, ny/ln, nz/ln])
+                    else: normals.extend([0, 0, 1])
+                except:
+                    normals.extend([0, 0, 1])
+                face_ids.append(float(face_idx))
+                seam_flags.append(1.0 if int(nt) in seam_node_tags else 0.0)
+            for i in range(0, len(tri_node_tags), 3):
+                n0, n1, n2 = int(tri_node_tags[i]), int(tri_node_tags[i+1]), int(tri_node_tags[i+2])
+                if n0 in tag_to_local and n1 in tag_to_local and n2 in tag_to_local:
+                    tris.extend([tag_to_local[n0], tag_to_local[n1], tag_to_local[n2]])
+        return verts, normals, face_ids, seam_flags, tris
 
-        if len(node_tags) == 0:
-            continue
+    # Determine if we split into two primitives or use one
+    has_split = bool(seam_edge_tags) and bool(top_face_tags) and bool(bot_face_tags)
+    if has_split:
+        top_data = extract_faces(top_face_tags)
+        bot_data = extract_faces(bot_face_tags)
+        print(f"[pipeline] Top: {len(top_data[0])//3}v {len(top_data[4])//3}f, "
+              f"Bottom: {len(bot_data[0])//3}v {len(bot_data[4])//3}f")
+    else:
+        top_data = extract_faces(None)
+        bot_data = None
 
-        # Get triangles
-        elem_types, elem_tags_list, elem_node_tags_list = gmsh.model.mesh.getElements(dim, tag)
-
-        # Find triangle elements (type 2)
-        tri_node_tags = None
-        for et, ent in zip(elem_types, elem_node_tags_list):
-            if et == 2:  # 3-node triangle
-                tri_node_tags = ent
-                break
-
-        if tri_node_tags is None or len(tri_node_tags) == 0:
-            continue
-
-        # Build local node map (tag → local index)
-        base = len(all_verts) // 3
-        tag_to_local = {}
-        for i, nt in enumerate(node_tags):
-            local_idx = base + i
-            tag_to_local[int(nt)] = local_idx
-
-            # Position (scaled)
-            x = coords[i * 3] * scale
-            y = coords[i * 3 + 1] * scale
-            z = coords[i * 3 + 2] * scale
-            all_verts.extend([x, y, z])
-
-            # Normal from OCC surface at parametric position
-            u, v = param_coords[i * 2], param_coords[i * 2 + 1]
-            try:
-                nx, ny, nz = gmsh.model.getNormal(tag, [u, v])
-                length = math.sqrt(nx*nx + ny*ny + nz*nz)
-                if length > 1e-15:
-                    all_normals.extend([nx/length, ny/length, nz/length])
-                else:
-                    all_normals.extend([0, 0, 1])
-            except:
-                all_normals.extend([0, 0, 1])
-
-            # Face ID
-            all_face_ids.append(float(face_idx))
-
-            # Seam flag (1.0 if vertex on seam edge, 0.0 otherwise)
-            all_seam.append(1.0 if int(nt) in seam_node_tags else 0.0)
-
-        # Triangles
-        for i in range(0, len(tri_node_tags), 3):
-            n0, n1, n2 = int(tri_node_tags[i]), int(tri_node_tags[i+1]), int(tri_node_tags[i+2])
-            if n0 in tag_to_local and n1 in tag_to_local and n2 in tag_to_local:
-                all_tris.extend([tag_to_local[n0], tag_to_local[n1], tag_to_local[n2]])
+    # Legacy: keep all_verts etc for the single-mesh path
+    all_verts = top_data[0]
+    all_normals = top_data[1]
+    all_face_ids = top_data[2]
+    all_seam = top_data[3]
+    all_tris = top_data[4]
 
     gmsh.finalize()
 
-    nv = len(all_verts) // 3
-    nf = len(all_tris) // 3
-    print(f"[pipeline] Mesh: {nv} vertices, {nf} triangles, {len(surfaces)} OCC faces")
+    def write_glb(path, parts):
+        """Write GLB with one mesh containing one or two primitives.
+        parts = [(verts, normals, face_ids, seam, tris), ...]
+        All parts share a single vertex buffer (concatenated), each has its own index buffer.
+        """
+        # Concatenate all vertex data
+        all_v, all_n, all_fid, all_s = [], [], [], []
+        part_offsets = []  # (vert_offset, num_verts, num_tris) per part
+        all_idx_parts = []
+        vert_offset = 0
+        for verts, normals, face_ids, seam_flags, tris in parts:
+            nv_part = len(verts) // 3
+            nf_part = len(tris) // 3
+            all_v.extend(verts)
+            all_n.extend(normals)
+            all_fid.extend(face_ids)
+            all_s.extend(seam_flags)
+            # Offset indices
+            all_idx_parts.append(np.array(tris, dtype=np.uint32))
+            part_offsets.append((vert_offset, nv_part, nf_part))
+            vert_offset += nv_part
 
-    if nv == 0:
-        print("[pipeline] Error: empty mesh")
-        return False
+        total_nv = vert_offset
+        if total_nv == 0:
+            print("[pipeline] Error: empty mesh")
+            return False
 
-    # 7. Write GLB
-    V = np.array(all_verts, dtype=np.float32)
-    N = np.array(all_normals, dtype=np.float32)
-    FID = np.array(all_face_ids, dtype=np.float32)
-    SEAM = np.array(all_seam, dtype=np.float32)
-    F = np.array(all_tris, dtype=np.uint32)
+        V = np.array(all_v, dtype=np.float32)
+        N = np.array(all_n, dtype=np.float32)
+        FID = np.array(all_fid, dtype=np.float32)
+        SEAM = np.array(all_s, dtype=np.float32)
 
-    pos_data = V.tobytes()
-    nrm_data = N.tobytes()
-    fid_data = FID.tobytes()
-    seam_data = SEAM.tobytes()
-    idx_data = F.tobytes()
-    buf = pos_data + nrm_data + fid_data + seam_data + idx_data
-    while len(buf) % 4:
-        buf += b'\x00'
+        pos_data = V.tobytes()
+        nrm_data = N.tobytes()
+        fid_data = FID.tobytes()
+        seam_data = SEAM.tobytes()
 
-    mn = V.reshape(-1, 3).min(axis=0).tolist()
-    mx = V.reshape(-1, 3).max(axis=0).tolist()
+        # Index buffers per part
+        idx_datas = [p.tobytes() for p in all_idx_parts]
 
-    nrm_off = len(pos_data)
-    fid_off = nrm_off + len(nrm_data)
-    seam_off = fid_off + len(fid_data)
-    idx_off = seam_off + len(seam_data)
+        # Build buffer: pos + nrm + fid + seam + idx0 [+ idx1]
+        buf = pos_data + nrm_data + fid_data + seam_data
+        for idata in idx_datas:
+            buf += idata
+        while len(buf) % 4:
+            buf += b'\x00'
 
-    gltf = json.dumps({
-        "asset": {"version": "2.0", "generator": "occ_gmsh_pipeline"},
-        "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}],
-        "meshes": [{"primitives": [{"attributes": {
-            "POSITION": 0, "NORMAL": 1, "_FACE_ID": 2, "_SEAM": 3
-        }, "indices": 4, "mode": 4}]}],
-        "accessors": [
-            {"bufferView": 0, "componentType": 5126, "count": nv, "type": "VEC3", "min": mn, "max": mx},
-            {"bufferView": 1, "componentType": 5126, "count": nv, "type": "VEC3"},
-            {"bufferView": 2, "componentType": 5126, "count": nv, "type": "SCALAR"},
-            {"bufferView": 3, "componentType": 5126, "count": nv, "type": "SCALAR"},
-            {"bufferView": 4, "componentType": 5125, "count": nf * 3, "type": "SCALAR"},
-        ],
-        "bufferViews": [
+        mn = V.reshape(-1, 3).min(axis=0).tolist()
+        mx = V.reshape(-1, 3).max(axis=0).tolist()
+
+        nrm_off = len(pos_data)
+        fid_off = nrm_off + len(nrm_data)
+        seam_off = fid_off + len(fid_data)
+
+        # Shared vertex attributes: accessors 0-3
+        accessors = [
+            {"bufferView": 0, "componentType": 5126, "count": total_nv, "type": "VEC3", "min": mn, "max": mx},
+            {"bufferView": 1, "componentType": 5126, "count": total_nv, "type": "VEC3"},
+            {"bufferView": 2, "componentType": 5126, "count": total_nv, "type": "SCALAR"},
+            {"bufferView": 3, "componentType": 5126, "count": total_nv, "type": "SCALAR"},
+        ]
+        buffer_views = [
             {"buffer": 0, "byteOffset": 0, "byteLength": len(pos_data), "target": 34962},
             {"buffer": 0, "byteOffset": nrm_off, "byteLength": len(nrm_data), "target": 34962},
             {"buffer": 0, "byteOffset": fid_off, "byteLength": len(fid_data), "target": 34962},
             {"buffer": 0, "byteOffset": seam_off, "byteLength": len(seam_data), "target": 34962},
-            {"buffer": 0, "byteOffset": idx_off, "byteLength": len(idx_data), "target": 34963},
-        ],
-        "buffers": [{"byteLength": len(buf)}],
-    }, separators=(',', ':')).encode()
-    while len(gltf) % 4:
-        gltf += b' '
+        ]
 
-    total = 12 + 8 + len(gltf) + 8 + len(buf)
-    with open(output_path, 'wb') as f:
-        f.write(struct.pack('<4sII', b'glTF', 2, total))
-        f.write(struct.pack('<II', len(gltf), 0x4E4F534A))
-        f.write(gltf)
-        f.write(struct.pack('<II', len(buf), 0x004E4942))
-        f.write(buf)
+        # Per-part index buffers + primitives
+        idx_base_off = seam_off + len(seam_data)
+        primitives = []
+        for pi, (vo, nv_p, nf_p) in enumerate(part_offsets):
+            acc_idx = len(accessors)
+            bv_idx = len(buffer_views)
+            buffer_views.append({
+                "buffer": 0, "byteOffset": idx_base_off, "byteLength": len(idx_datas[pi]), "target": 34963
+            })
+            accessors.append({
+                "bufferView": bv_idx, "componentType": 5125, "count": nf_p * 3, "type": "SCALAR"
+            })
+            primitives.append({
+                "attributes": {"POSITION": 0, "NORMAL": 1, "_FACE_ID": 2, "_SEAM": 3},
+                "indices": acc_idx, "mode": 4
+            })
+            idx_base_off += len(idx_datas[pi])
 
-    extent_mm = [mx[i] - mn[i] for i in range(3)]
-    print(f"[pipeline] Wrote: {output_path} ({os.path.getsize(output_path)} bytes)")
-    print(f"[pipeline] Extent: {extent_mm[0]:.1f} x {extent_mm[1]:.1f} x {extent_mm[2]:.1f} mm")
-    return True
+        total_nf = sum(po[2] for po in part_offsets)
+        print(f"[pipeline] Mesh: {total_nv} vertices, {total_nf} triangles, "
+              f"{len(primitives)} primitive(s), {len(surfaces)} OCC faces")
+
+        gltf = json.dumps({
+            "asset": {"version": "2.0", "generator": "occ_gmsh_pipeline"},
+            "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}],
+            "meshes": [{"primitives": primitives}],
+            "accessors": accessors,
+            "bufferViews": buffer_views,
+            "buffers": [{"byteLength": len(buf)}],
+        }, separators=(',', ':')).encode()
+        while len(gltf) % 4:
+            gltf += b' '
+
+        total_size = 12 + 8 + len(gltf) + 8 + len(buf)
+        with open(path, 'wb') as f:
+            f.write(struct.pack('<4sII', b'glTF', 2, total_size))
+            f.write(struct.pack('<II', len(gltf), 0x4E4F534A))
+            f.write(gltf)
+            f.write(struct.pack('<II', len(buf), 0x004E4942))
+            f.write(buf)
+
+        extent_mm = [mx[i] - mn[i] for i in range(3)]
+        print(f"[pipeline] Wrote: {path} ({os.path.getsize(path)} bytes)")
+        print(f"[pipeline] Extent: {extent_mm[0]:.1f} x {extent_mm[1]:.1f} x {extent_mm[2]:.1f} mm")
+        return True
+
+    # Build parts list
+    if has_split:
+        parts = [top_data, bot_data]
+    else:
+        parts = [top_data]
+
+    return write_glb(output_path, parts)
 
 
 def main():
