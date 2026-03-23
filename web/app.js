@@ -89,6 +89,8 @@ async function loadGlb(glbBuffer, applyChecker = false) {
             if (currentMesh?.material) currentMesh.material.backFaceCulling = false;
             if (applyChecker && currentMesh?.isVerticesDataPresent(BABYLON.VertexBuffer.UVKind)) applyCheckerboard(currentMesh);
             if (currentMesh) showMeshQuality(currentMesh);
+            // Auto-show color-coded B-Rep edges
+            if (currentMesh) showColorCodedEdges(currentMesh);
         }
     } finally { URL.revokeObjectURL(url); }
 }
@@ -297,11 +299,9 @@ $('fileInput').addEventListener('change', async (e) => {
         $('metricsPanel').style.display = 'block';
         $('comparisonPanel').style.display = 'none';
         $('exportPanel').style.display = 'none';
-        // Show face edges by default only if _FACE_ID attribute is present (STEP/Gmsh meshes)
-        if (currentMesh && $('showFaceEdges')) {
-            const hasFaceId = currentMesh.getVerticesData('_FACE_ID') != null;
-            $('showFaceEdges').checked = hasFaceId;
-            if (hasFaceId) showFaceEdges(currentMesh);
+        // Face edges are now auto-shown via showColorCodedEdges in loadGlb
+        if ($('showFaceEdges')) {
+            $('showFaceEdges').checked = currentMesh?.getVerticesData('_FACE_ID') != null;
         }
         // Auto-detect artist UVs for OBJ files
         state.artistGlb = null;
@@ -630,14 +630,114 @@ function injectCustomAttrs(mesh, glbBuffer) {
 }
 
 function showSeamLines(mesh) {
-    showEdgeOverlay(mesh, '_SEAM', new BABYLON.Color3(0.3, 0.7, 1.0), '_seam_lines');
+    // Seam = thick transparent blue on seam vertices (_SEAM > 0.5)
+    scene.meshes.filter(m => m.name === '_seam_lines').forEach(m => m.dispose());
+    if (!mesh) return;
+    const positions = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+    const indices = mesh.getIndices();
+    const seamData = mesh.getVerticesData('_SEAM');
+    if (!positions || !indices || !seamData) return;
+
+    const linePoints = [];
+    for (let t = 0; t < indices.length; t += 3) {
+        for (let e = 0; e < 3; e++) {
+            const a = indices[t + e], b = indices[t + (e + 1) % 3];
+            if (seamData[a] > 0.5 && seamData[b] > 0.5) {
+                linePoints.push(
+                    new BABYLON.Vector3(positions[a*3], positions[a*3+1], positions[a*3+2]),
+                    new BABYLON.Vector3(positions[b*3], positions[b*3+1], positions[b*3+2]),
+                );
+            }
+        }
+    }
+    if (linePoints.length > 0) {
+        const lines = BABYLON.MeshBuilder.CreateLineSystem('_seam_lines', {
+            lines: Array.from({length: linePoints.length / 2}, (_, i) =>
+                [linePoints[i * 2], linePoints[i * 2 + 1]]),
+        }, scene);
+        lines.color = new BABYLON.Color3(0.3, 0.6, 1.0);
+        lines.alpha = 0.6;
+        lines.isPickable = false;
+        lines.parent = mesh.parent || mesh;
+        // Make thicker by enabling edge rendering
+        lines.enableEdgesRendering();
+        lines.edgesWidth = 4.0;
+        lines.edgesColor = new BABYLON.Color4(0.3, 0.6, 1.0, 0.6);
+    }
+}
+
+// Color-coded B-Rep edges: red (seam), orange (other Z-perp), yellow (rest)
+function showColorCodedEdges(mesh) {
+    // Dispose old overlays
+    for (const name of ['_edges_red', '_edges_orange', '_edges_yellow'])
+        scene.meshes.filter(m => m.name === name).forEach(m => m.dispose());
+
+    if (!mesh) return;
+    const positions = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+    const indices = mesh.getIndices();
+    const faceIdData = mesh.getVerticesData('_FACE_ID');
+    const seamData = mesh.getVerticesData('_SEAM');
+    if (!positions || !indices || !faceIdData) return;
+
+    // 1. Find all B-Rep boundary edges
+    const q = v => Math.round(v * 1e4);
+    const pk = i => `${q(positions[i*3])}_${q(positions[i*3+1])}_${q(positions[i*3+2])}`;
+    const edgeMap = new Map();
+    for (let t = 0; t < indices.length; t += 3) {
+        const fid = faceIdData[indices[t]];
+        for (let e = 0; e < 3; e++) {
+            const a = indices[t + e], b = indices[t + (e + 1) % 3];
+            const ka = pk(a), kb = pk(b);
+            const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+            if (!edgeMap.has(key)) edgeMap.set(key, []);
+            edgeMap.get(key).push({ fid, a, b });
+        }
+    }
+
+    // Collect boundary edges and classify
+    const redPts = [], orangePts = [], yellowPts = [];
+    const zTol = 0.5;
+
+    for (const [, entries] of edgeMap) {
+        if (entries.length < 2) continue;
+        const fids = new Set(entries.map(e => e.fid));
+        if (fids.size <= 1) continue;
+
+        const { a, b } = entries[0];
+        const za = positions[a*3+2], zb = positions[b*3+2];
+        const isSeam = seamData && seamData[a] > 0.5 && seamData[b] > 0.5;
+        const isZPerp = Math.abs(za - zb) < zTol;
+
+        const pts = isSeam ? redPts : isZPerp ? orangePts : yellowPts;
+        pts.push(
+            new BABYLON.Vector3(positions[a*3], positions[a*3+1], positions[a*3+2]),
+            new BABYLON.Vector3(positions[b*3], positions[b*3+1], positions[b*3+2]),
+        );
+    }
+
+    // Draw each color layer
+    const drawLines = (name, pts, color) => {
+        if (pts.length === 0) return;
+        const lines = BABYLON.MeshBuilder.CreateLineSystem(name, {
+            lines: Array.from({length: pts.length / 2}, (_, i) => [pts[i*2], pts[i*2+1]]),
+        }, scene);
+        lines.color = color;
+        lines.isPickable = false;
+        lines.parent = mesh.parent || mesh;
+    };
+
+    drawLines('_edges_yellow', yellowPts, new BABYLON.Color3(1.0, 0.9, 0.2));
+    drawLines('_edges_orange', orangePts, new BABYLON.Color3(1.0, 0.6, 0.2));
+    drawLines('_edges_red', redPts, new BABYLON.Color3(1.0, 0.1, 0.1));
+
+    console.log(`[edges] red=${redPts.length/2} orange=${orangePts.length/2} yellow=${yellowPts.length/2}`);
 }
 
 function showFaceEdges(mesh) {
-    if (!mesh.getVerticesData('_FACE_ID')) return;
-    showEdgeOverlay(mesh, '_FACE_ID', new BABYLON.Color3(1.0, 0.6, 0.2), '_face_edges');
+    showColorCodedEdges(mesh);
 }
 
+// Legacy Z-loop function (replaced by color-coded edges)
 function showZPerpendicularLoops(mesh) {
     const overlayName = '_z_loops';
     scene.meshes.filter(m => m.name === overlayName).forEach(m => m.dispose());
@@ -796,8 +896,6 @@ $('showWireframe').addEventListener('change', () => {
 
 $('showSeams')?.addEventListener('change', () => {
     if ($('showSeams').checked) {
-        $('showFaceEdges').checked = false;
-        scene?.meshes.filter(m => m.name === '_face_edges').forEach(m => m.dispose());
         if (currentMesh) showSeamLines(currentMesh);
     } else {
         scene?.meshes.filter(m => m.name === '_seam_lines').forEach(m => m.dispose());
@@ -806,19 +904,10 @@ $('showSeams')?.addEventListener('change', () => {
 
 $('showFaceEdges')?.addEventListener('change', () => {
     if ($('showFaceEdges').checked) {
-        $('showSeams').checked = false;
-        scene?.meshes.filter(m => m.name === '_seam_lines').forEach(m => m.dispose());
-        if (currentMesh) showFaceEdges(currentMesh);
+        if (currentMesh) showColorCodedEdges(currentMesh);
     } else {
-        scene?.meshes.filter(m => m.name === '_face_edges').forEach(m => m.dispose());
-    }
-});
-
-$('showZLoops')?.addEventListener('change', () => {
-    if ($('showZLoops').checked) {
-        if (currentMesh) showZPerpendicularLoops(currentMesh);
-    } else {
-        scene?.meshes.filter(m => m.name === '_z_loops').forEach(m => m.dispose());
+        for (const n of ['_edges_red', '_edges_orange', '_edges_yellow'])
+            scene?.meshes.filter(m => m.name === n).forEach(m => m.dispose());
     }
 });
 

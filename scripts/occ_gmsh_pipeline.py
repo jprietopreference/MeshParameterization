@@ -177,6 +177,7 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
     z_tol_seam = 0.5
     try:
         best_perim = 0
+        best_z = 1e18
         best_face_tag = -1
         best_edges = []
         for dim_s, tag_s in gmsh.model.occ.getEntities(dim=2):
@@ -201,8 +202,12 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
                     pass
             if not zs or (max(zs) - min(zs)) > z_tol_seam:
                 continue
-            if edge_perim > best_perim:
+            avg_z = sum(zs) / len(zs) if zs else 0
+            # Pick longest perimeter; on tie, pick lower Z (min Z = bottom seam)
+            if (edge_perim > best_perim + 0.1 or
+                (abs(edge_perim - best_perim) <= 0.1 and avg_z < best_z)):
                 best_perim = edge_perim
+                best_z = avg_z
                 best_face_tag = tag_s
                 best_edges = [abs(b[1]) for b in bnd]
 
