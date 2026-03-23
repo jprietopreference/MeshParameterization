@@ -91,10 +91,13 @@
                     <tr><td>Min angle</td><td id="metMinAngle">-</td></tr>
                     <tr><td>Max aspect ratio</td><td id="metMaxAspect">-</td></tr>
                     <tr><td>Edge len (min/mean/max)</td><td id="metEdgeLen">-</td></tr>
-                    <tr><td colspan="2" style="font-weight:bold;padding-top:6px">UV Quality</td></tr>
-                    <tr><td>Angle (mean)</td><td id="metAngle">-</td></tr>
-                    <tr><td>Angle (max)</td><td id="metAngleMax">-</td></tr>
-                    <tr><td>Area (mean)</td><td id="metArea">-</td></tr>
+                    <tr><td colspan="2" style="font-weight:bold;padding-top:6px">UV Quality (Stein et al.)</td></tr>
+                    <tr><td>Sym. Dirichlet</td><td id="metSymDir">-</td></tr>
+                    <tr><td>Flipped tris</td><td id="metFlipped">-</td></tr>
+                    <tr><td>L2 area dist.</td><td id="metL2Area">-</td></tr>
+                    <tr><td>L∞ area dist.</td><td id="metLinfArea">-</td></tr>
+                    <tr><td colspan="2" style="font-weight:bold;padding-top:6px">Other Metrics</td></tr>
+                    <tr><td>Angle (mean/max)</td><td id="metAngle">-</td></tr>
                     <tr><td>Stretch (mean)</td><td id="metStretch">-</td></tr>
                     <tr><td>Score</td><td id="metScore">-</td></tr>
                 </table>
@@ -104,7 +107,7 @@
                 <h2>Method Comparison</h2>
                 <table id="comparisonTable">
                     <thead>
-                        <tr><th>Method</th><th>Angle</th><th>Stretch</th><th>Time</th><th>Score</th></tr>
+                        <tr><th>Method</th><th>Sym.Dir.</th><th>Flips</th><th>Time</th><th>Score</th></tr>
                     </thead>
                     <tbody id="comparisonBody"></tbody>
                 </table>

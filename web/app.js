@@ -54,7 +54,8 @@ function setMetric(id, val) { $(id).textContent = val; }
 function clearMetrics() {
     ['metMethod','metVerts','metTris','metStepTime','metParamTime',
      'metEquilateral','metMinAngle','metMaxAspect','metEdgeLen',
-     'metAngle','metAngleMax','metArea','metStretch','metScore'].forEach(id => setMetric(id, '-'));
+     'metSymDir','metFlipped','metL2Area','metLinfArea',
+     'metAngle','metStretch','metScore'].forEach(id => setMetric(id, '-'));
     $('comparisonBody').innerHTML = '';
 }
 
@@ -283,9 +284,13 @@ $('paramBtn').addEventListener('click', async () => {
         if (result.metrics) {
             try {
                 const m = JSON.parse(result.metrics);
-                if (m.angle_mean != null) setMetric('metAngle', m.angle_mean.toFixed(2) + '\u00b0');
-                if (m.angle_max != null) setMetric('metAngleMax', m.angle_max.toFixed(2) + '\u00b0');
-                if (m.area_mean != null) setMetric('metArea', m.area_mean.toFixed(3));
+                // Stein et al. paper metrics
+                if (m.sym_dirichlet != null && m.sym_dirichlet > 0) setMetric('metSymDir', m.sym_dirichlet.toFixed(4));
+                if (m.flipped_tris != null && m.flipped_tris >= 0) setMetric('metFlipped', m.flipped_tris);
+                if (m.l2_area != null && m.l2_area >= 0) setMetric('metL2Area', m.l2_area.toFixed(4));
+                if (m.linf_area != null && m.linf_area >= 0) setMetric('metLinfArea', m.linf_area.toFixed(4));
+                // Other metrics
+                if (m.angle_mean != null) setMetric('metAngle', m.angle_mean.toFixed(2) + '\u00b0 / ' + (m.angle_max?.toFixed(2) || '-') + '\u00b0');
                 if (m.stretch_mean != null) setMetric('metStretch', m.stretch_mean.toFixed(2));
                 if (m.score != null) setMetric('metScore', m.score.toFixed(2));
             } catch (e) {}
@@ -299,6 +304,7 @@ $('paramBtn').addEventListener('click', async () => {
                 const tbody = $('comparisonBody');
                 tbody.innerHTML = '';
                 all.sort((a, b) => (a.score || 1e18) - (b.score || 1e18));
+                const fmtSD = v => v > 1e6 ? v.toExponential(1) : v > 100 ? v.toFixed(0) : v.toFixed(2);
                 for (const m of all) {
                     const tr = document.createElement('tr');
                     const winner = m.method === result.method;
@@ -308,11 +314,13 @@ $('paramBtn').addEventListener('click', async () => {
                         tr.style.cursor = 'pointer';
                         tr.addEventListener('click', () => loadMethodResult(sessionId, m.method));
                     }
-                    tr.innerHTML = `<td>${m.method}${winner ? ' ★' : ''}</td>` +
-                        `<td>${m.success ? m.angle_mean?.toFixed(1) + '°' : 'FAIL'}</td>` +
-                        `<td>${m.success ? m.stretch_mean?.toFixed(1) : '-'}</td>` +
+                    const sd = m.sym_dirichlet > 0 ? fmtSD(m.sym_dirichlet) : '-';
+                    const flips = m.flipped_tris >= 0 ? m.flipped_tris : '-';
+                    tr.innerHTML = `<td>${m.method}${winner ? ' \u2605' : ''}</td>` +
+                        `<td>${m.success ? sd : 'FAIL'}</td>` +
+                        `<td>${m.success ? flips : '-'}</td>` +
                         `<td>${m.success ? m.elapsed_ms?.toFixed(0) + 'ms' : '-'}</td>` +
-                        `<td>${m.success ? m.score?.toFixed(1) : '-'}</td>`;
+                        `<td>${m.success ? fmtSD(m.score) : '-'}</td>`;
                     tbody.appendChild(tr);
                 }
                 $('comparisonPanel').style.display = 'block';
@@ -364,9 +372,11 @@ async function loadMethodResult(session, methodName) {
             try {
                 const m = JSON.parse(metricsStr);
                 setMetric('metMethod', methodName);
-                if (m.angle_mean != null) setMetric('metAngle', m.angle_mean.toFixed(2) + '\u00b0');
-                if (m.angle_max != null) setMetric('metAngleMax', m.angle_max.toFixed(2) + '\u00b0');
-                if (m.area_mean != null) setMetric('metArea', m.area_mean.toFixed(3));
+                if (m.sym_dirichlet != null && m.sym_dirichlet > 0) setMetric('metSymDir', m.sym_dirichlet.toFixed(4));
+                if (m.flipped_tris != null && m.flipped_tris >= 0) setMetric('metFlipped', m.flipped_tris);
+                if (m.l2_area != null && m.l2_area >= 0) setMetric('metL2Area', m.l2_area.toFixed(4));
+                if (m.linf_area != null && m.linf_area >= 0) setMetric('metLinfArea', m.linf_area.toFixed(4));
+                if (m.angle_mean != null) setMetric('metAngle', m.angle_mean.toFixed(2) + '\u00b0 / ' + (m.angle_max?.toFixed(2) || '-') + '\u00b0');
                 if (m.stretch_mean != null) setMetric('metStretch', m.stretch_mean.toFixed(2));
                 if (m.score != null) setMetric('metScore', m.score.toFixed(2));
             } catch (e) {}
