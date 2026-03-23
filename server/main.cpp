@@ -1466,12 +1466,15 @@ int main(int argc, char* argv[]) {
         std::cout << "  [broker] Winner: " << best.method
                   << " (score=" << best.score() << ")" << std::endl;
 
-        // Re-apply original normals: map UVs from welded result back to split-vertex input
+        // Re-apply original normals: map UVs from welded result back to split-vertex input.
+        // Skip if the result came from split-and-combine (param has more faces than original
+        // due to seam faces duplicated in both halves).
         {
             auto orig = meshparam::load_gltf_from_memory(input_original);
             auto param = meshparam::load_gltf_from_memory(best.glb);
+            bool is_split_result = param.num_faces() > orig.num_faces();
 
-            if (orig.has_normals() && param.has_uvs() && orig.num_vertices() != param.num_vertices()) {
+            if (!is_split_result && orig.has_normals() && param.has_uvs() && orig.num_vertices() != param.num_vertices()) {
                 struct Vec3Hash {
                     size_t operator()(const std::array<int64_t,3>& v) const {
                         size_t h = 0;
