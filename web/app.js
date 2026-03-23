@@ -52,7 +52,7 @@ createScene();
 function setStatus(msg, type = '') { $('statusBar').textContent = msg; $('statusBar').className = type; }
 function setMetric(id, val) { $(id).textContent = val; }
 function clearMetrics() {
-    ['metMethod','metVerts','metTris','metStepTime','metParamTime',
+    ['metMethod','metBBox','metVerts','metTris','metStepTime','metParamTime',
      'metEquilateral','metMinAngle','metMaxAspect','metEdgeLen',
      'metSymDir','metFlipped','metL2Area','metLinfArea',
      'metAngle','metStretch','metScore'].forEach(id => setMetric(id, '-'));
@@ -161,6 +161,16 @@ function showMeshQuality(mesh) {
     setMetric('metMinAngle', `${q.minAngleMean.toFixed(1)}\u00b0 mean, ${q.minAngleMin.toFixed(1)}\u00b0 min`);
     setMetric('metMaxAspect', q.aspectMax.toFixed(1));
     setMetric('metEdgeLen', `${q.edgeMin.toFixed(3)} / ${q.edgeMean.toFixed(3)} / ${q.edgeMax.toFixed(3)}`);
+    // Bounding box from mesh positions
+    const positions = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+    if (positions) {
+        let bmin = [Infinity,Infinity,Infinity], bmax = [-Infinity,-Infinity,-Infinity];
+        for (let i = 0; i < positions.length; i += 3) {
+            for (let j = 0; j < 3; j++) { bmin[j] = Math.min(bmin[j], positions[i+j]); bmax[j] = Math.max(bmax[j], positions[i+j]); }
+        }
+        const ext = [bmax[0]-bmin[0], bmax[1]-bmin[1], bmax[2]-bmin[2]];
+        setMetric('metBBox', `${ext[0].toFixed(1)} \u00d7 ${ext[1].toFixed(1)} \u00d7 ${ext[2].toFixed(1)} mm`);
+    }
 }
 
 function applyCheckerboard(mesh) {
@@ -248,10 +258,15 @@ $('fileInput').addEventListener('change', async (e) => {
         await loadGlb(state.inputGlb, false);
         $('paramPanel').style.display = 'block';
         $('paramBtn').disabled = false;
-        $('viewPanel').style.display = 'none';
+        $('viewPanel').style.display = 'block';
         $('metricsPanel').style.display = 'block';
         $('comparisonPanel').style.display = 'none';
         $('exportPanel').style.display = 'none';
+        // Show face edges by default on input mesh (B-Rep edges available before parameterization)
+        if (currentMesh && $('showFaceEdges')) {
+            $('showFaceEdges').checked = true;
+            showFaceEdges(currentMesh);
+        }
         setStatus('File loaded. Choose parameterization method.', '');
     } catch (err) {
         setStatus(`Error: ${err.message}`, 'error');
