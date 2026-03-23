@@ -85,6 +85,8 @@ async function loadGlb(glbBuffer, applyChecker = false) {
             currentMesh = container.meshes.find(m => m.getTotalVertices() > 0) || container.meshes[0];
             // Inject custom attributes (_SEAM, _FACE_ID) from raw GLB
             if (currentMesh && lastGlbBuffer) injectCustomAttrs(currentMesh, lastGlbBuffer);
+            // Disable backface culling — some meshes have inconsistent winding
+            if (currentMesh?.material) currentMesh.material.backFaceCulling = false;
             if (applyChecker && currentMesh?.isVerticesDataPresent(BABYLON.VertexBuffer.UVKind)) applyCheckerboard(currentMesh);
             if (currentMesh) showMeshQuality(currentMesh);
         }
@@ -181,6 +183,7 @@ function applyCheckerboard(mesh) {
     tex.uScale = 2.0; tex.vScale = 2.0;
     mat.diffuseTexture = tex;
     mat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+    mat.backFaceCulling = false;
     mesh.material = mat;
 }
 
@@ -262,10 +265,11 @@ $('fileInput').addEventListener('change', async (e) => {
         $('metricsPanel').style.display = 'block';
         $('comparisonPanel').style.display = 'none';
         $('exportPanel').style.display = 'none';
-        // Show face edges by default on input mesh (B-Rep edges available before parameterization)
+        // Show face edges by default only if _FACE_ID attribute is present (STEP/Gmsh meshes)
         if (currentMesh && $('showFaceEdges')) {
-            $('showFaceEdges').checked = true;
-            showFaceEdges(currentMesh);
+            const hasFaceId = currentMesh.getVerticesData('_FACE_ID') != null;
+            $('showFaceEdges').checked = hasFaceId;
+            if (hasFaceId) showFaceEdges(currentMesh);
         }
         // Auto-detect artist UVs for OBJ files
         state.artistGlb = null;
@@ -622,6 +626,7 @@ $('textureSelect').addEventListener('change', () => {
         const mat = new BABYLON.StandardMaterial('wire', scene);
         mat.diffuseColor = new BABYLON.Color3(0.3, 0.3, 0.3);
         mat.wireframe = true;
+        mat.backFaceCulling = false;
         currentMesh.material = mat;
     }
 });
