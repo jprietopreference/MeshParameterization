@@ -580,29 +580,83 @@ std::vector<uint8_t> cut_closed_mesh(const std::vector<uint8_t>& input_glb) {
     return cgalparam::save_gltf_to_memory(cut_tri);
 }
 
-// Cut a closed mesh along a specific vertex loop (from auto-seam Z-loop detection)
+// Cut a closed mesh along a set of seam vertices (from auto-seam detection).
+// Orders the vertices into a connected path by following mesh edges.
 std::vector<uint8_t> cut_mesh_along_loop(const std::vector<uint8_t>& input_glb,
-                                          const std::vector<int>& loop_verts) {
-    if (loop_verts.size() < 3) return cut_closed_mesh(input_glb); // fallback
+                                          const std::vector<int>& seam_verts) {
+    if (seam_verts.size() < 3) return cut_closed_mesh(input_glb);
 
     auto tri = cgalparam::load_gltf_from_memory(input_glb);
     auto sm = cgalparam::to_cgal_mesh(tri);
-
-    // Convert vertex indices to CGAL vertex descriptors
-    std::vector<cgalparam::SurfaceMesh::Vertex_index> path;
     int cgal_nv = static_cast<int>(sm.number_of_vertices());
-    for (int vi : loop_verts) {
-        if (vi >= 0 && vi < cgal_nv) {
-            path.push_back(cgalparam::SurfaceMesh::Vertex_index(vi));
+
+    // Build set of seam vertex indices for quick lookup
+    std::set<int> seam_set(seam_verts.begin(), seam_verts.end());
+
+    // Build adjacency among seam vertices via mesh edges
+    std::map<int, std::vector<int>> adj;
+    for (auto e : sm.edges()) {
+        auto h = sm.halfedge(e);
+        int a = static_cast<int>(sm.source(h));
+        int b = static_cast<int>(sm.target(h));
+        if (seam_set.count(a) && seam_set.count(b)) {
+            adj[a].push_back(b);
+            adj[b].push_back(a);
         }
     }
 
-    if (path.size() < 3) {
-        std::cerr << "[auto-seam] Loop too short after CGAL mapping, fallback to BFS" << std::endl;
+    // Trace ordered path from the seam adjacency graph
+    // Start from any seam vertex, follow edges to form a loop
+    if (adj.empty()) {
+        std::cerr << "[auto-seam] No adjacent seam edges found, fallback to BFS" << std::endl;
         if (CGAL::is_closed(sm)) {
             auto cut = cgalparam::cut_to_disk(sm);
-            auto cut_tri = cgalparam::from_cgal_mesh(cut.cut_mesh);
-            return cgalparam::save_gltf_to_memory(cut_tri);
+            return cgalparam::save_gltf_to_memory(cgalparam::from_cgal_mesh(cut.cut_mesh));
+        }
+        return input_glb;
+    }
+
+    std::vector<int> ordered;
+    std::set<int> visited;
+    int start = adj.begin()->first;
+    int cur = start, prev = -1;
+    for (int step = 0; step < (int)seam_verts.size() + 10; step++) {
+        ordered.push_back(cur);
+        visited.insert(cur);
+        int next = -1;
+        for (int nb : adj[cur]) {
+            if (nb == prev) continue;
+            if (nb == start && ordered.size() > 2) {
+                // Closed the loop
+                next = -2;
+                break;
+            }
+            if (!visited.count(nb)) {
+                next = nb;
+                break;
+            }
+        }
+        if (next == -2) break; // closed loop
+        if (next < 0) break;   // dead end
+        prev = cur;
+        cur = next;
+    }
+
+    std::cerr << "[auto-seam] Ordered path: " << ordered.size() << " vertices from "
+              << seam_verts.size() << " seam vertices" << std::endl;
+
+    // Convert to CGAL vertex descriptors
+    std::vector<cgalparam::SurfaceMesh::Vertex_index> path;
+    for (int vi : ordered) {
+        if (vi >= 0 && vi < cgal_nv)
+            path.push_back(cgalparam::SurfaceMesh::Vertex_index(vi));
+    }
+
+    if (path.size() < 3) {
+        std::cerr << "[auto-seam] Path too short, fallback to BFS" << std::endl;
+        if (CGAL::is_closed(sm)) {
+            auto cut = cgalparam::cut_to_disk(sm);
+            return cgalparam::save_gltf_to_memory(cgalparam::from_cgal_mesh(cut.cut_mesh));
         }
         return input_glb;
     }
@@ -610,15 +664,14 @@ std::vector<uint8_t> cut_mesh_along_loop(const std::vector<uint8_t>& input_glb,
     try {
         auto cut = cgalparam::cut_along_path(sm, path);
         auto cut_tri = cgalparam::from_cgal_mesh(cut.cut_mesh);
-        std::cerr << "[auto-seam] Cut along Z-loop: " << tri.V.rows() << " -> "
+        std::cerr << "[auto-seam] Cut: " << tri.V.rows() << " -> "
                   << cut_tri.V.rows() << " verts" << std::endl;
         return cgalparam::save_gltf_to_memory(cut_tri);
     } catch (const std::exception& e) {
         std::cerr << "[auto-seam] Cut failed: " << e.what() << ", fallback to BFS" << std::endl;
         if (CGAL::is_closed(sm)) {
             auto cut = cgalparam::cut_to_disk(sm);
-            auto cut_tri = cgalparam::from_cgal_mesh(cut.cut_mesh);
-            return cgalparam::save_gltf_to_memory(cut_tri);
+            return cgalparam::save_gltf_to_memory(cgalparam::from_cgal_mesh(cut.cut_mesh));
         }
         return input_glb;
     }
