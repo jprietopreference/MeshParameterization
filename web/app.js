@@ -686,7 +686,8 @@ function showColorCodedEdges(mesh) {
 
             const eid_a = Math.round(va) % 10000;
             const eid_b = Math.round(vb) % 10000;
-            if (eid_a !== eid_b) continue; // different OCC edges — not a B-Rep edge
+            // Match if same edge ID, or either is 9999 (junction wildcard)
+            if (eid_a !== eid_b && eid_a !== 9999 && eid_b !== 9999) continue;
 
             const type_a = Math.floor(Math.round(va) / 10000);
             const type_b = Math.floor(Math.round(vb) / 10000);

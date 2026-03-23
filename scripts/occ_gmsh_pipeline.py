@@ -446,14 +446,20 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
                     normals.extend([0, 0, 1])
                 face_ids.append(float(face_idx))
                 seam_flags.append(1.0 if int(nt) in seam_node_tags else 0.0)
-                edge_types.append(float(node_edge_type.get(int(nt), 0)))
-                # For _EDGE_ID: encode as type*10000 + edge_tag for the highest-priority edge
+                # _EDGE_TYPE encodes: type*10000 + edge_id
+                # Junction vertices (on 2+ edges) get edge_id = 9999 (wildcard)
                 nt_int = int(nt)
                 if nt_int in node_edge_ids:
-                    # Pick the edge with highest priority type
-                    best_eid = min(node_edge_ids[nt_int], key=lambda e: edge_type_map.get(e, 9))
-                    edge_types[-1] = float(edge_type_map.get(best_eid, 0) * 10000 + best_eid)
-                # edge_types now encodes: type*10000 + edge_id (0 = interior)
+                    eids = node_edge_ids[nt_int]
+                    best_type = node_edge_type.get(nt_int, 0)
+                    if len(eids) > 1:
+                        # Junction — wildcard ID, matches any adjacent edge
+                        edge_types.append(float(best_type * 10000 + 9999))
+                    else:
+                        eid = next(iter(eids))
+                        edge_types.append(float(best_type * 10000 + eid))
+                else:
+                    edge_types.append(0.0)  # interior
             for i in range(0, len(tri_node_tags), 3):
                 n0, n1, n2 = int(tri_node_tags[i]), int(tri_node_tags[i+1]), int(tri_node_tags[i+2])
                 if n0 in tag_to_local and n1 in tag_to_local and n2 in tag_to_local:
