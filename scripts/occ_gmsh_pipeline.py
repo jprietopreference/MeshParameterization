@@ -120,6 +120,12 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
     # Don't propagate small boundary sizes deep into flat face interiors.
     gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
     gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+    # Smooth size gradation to limit abrupt size transitions
+    gmsh.option.setNumber("Mesh.SmoothRatio", 2.0)
+    # Optimize mesh quality after generation (Laplacian smoothing + edge swaps)
+    gmsh.option.setNumber("Mesh.Optimize", 1)
+    gmsh.option.setNumber("Mesh.OptimizeNetgen", 1)
+    gmsh.option.setNumber("Mesh.Smoothing", 10)  # Laplacian smoothing passes
 
     # 5. Generate mesh (with fallback: re-import without heal if heal broke edges)
     print(f"[pipeline] Meshing (min={min_edge:.4f}, max={max_edge:.4f}, curv={curvature_elements})...")
