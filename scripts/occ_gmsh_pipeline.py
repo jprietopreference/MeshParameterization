@@ -195,8 +195,17 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
             p2 = gmsh.model.getValue(0, pts[1][1], [])
             if abs(p1[2] - p2[2]) * scale > z_tol_seam:
                 continue
-            # Use exact B-Rep curve length (OCC analytical, not meshed approximation)
-            edge_len = gmsh.model.occ.getMass(1, tag_e) * scale
+            # Use meshed edge length (follows actual curve geometry including fillets)
+            try:
+                ntags, coords, _ = gmsh.model.mesh.getNodes(1, tag_e, includeBoundary=True)
+                edge_len = 0
+                for i in range(len(ntags) - 1):
+                    dx = (coords[(i+1)*3] - coords[i*3]) * scale
+                    dy = (coords[(i+1)*3+1] - coords[i*3+1]) * scale
+                    dz = (coords[(i+1)*3+2] - coords[i*3+2]) * scale
+                    edge_len += math.sqrt(dx*dx + dy*dy + dz*dz)
+            except:
+                edge_len = gmsh.model.occ.getMass(1, tag_e) * scale
             avg_z = (p1[2] + p2[2]) / 2.0 * scale
             z_perp_edges.append((tag_e, pts[0][1], pts[1][1], avg_z, edge_len))
 
