@@ -82,14 +82,38 @@ async function loadGlb(glbBuffer, applyChecker = false) {
             scene.activeCamera.target = center;
             scene.activeCamera.radius = extent * 1.5;
             new BABYLON.AxesViewer(scene, extent > 10 ? 20 : extent * 0.2);
-            currentMesh = container.meshes.find(m => m.getTotalVertices() > 0) || container.meshes[0];
-            // Inject custom attributes (_SEAM, _FACE_ID) from raw GLB
-            if (currentMesh && lastGlbBuffer) injectCustomAttrs(currentMesh, lastGlbBuffer);
-            // Disable backface culling — some meshes have inconsistent winding
-            if (currentMesh?.material) currentMesh.material.backFaceCulling = false;
-            if (applyChecker && currentMesh?.isVerticesDataPresent(BABYLON.VertexBuffer.UVKind)) applyCheckerboard(currentMesh);
+            // Find all renderable meshes (primitives become separate meshes in BabylonJS)
+            const renderMeshes = container.meshes.filter(m => m.getTotalVertices() > 0);
+            currentMesh = renderMeshes[0] || container.meshes[0];
+
+            // Inject custom attributes and disable backface culling on all meshes
+            for (const mesh of renderMeshes) {
+                if (lastGlbBuffer) injectCustomAttrs(mesh, lastGlbBuffer);
+                if (mesh.material) mesh.material.backFaceCulling = false;
+            }
+
+            if (applyChecker) {
+                // After parameterization: apply checkerboard per primitive
+                for (let mi = 0; mi < renderMeshes.length; mi++) {
+                    const mesh = renderMeshes[mi];
+                    if (mesh.isVerticesDataPresent(BABYLON.VertexBuffer.UVKind))
+                        applyCheckerboard(mesh, mi > 0); // mi>0 = back face
+                }
+            } else if (renderMeshes.length >= 2) {
+                // Before parameterization: color front/back differently
+                const frontMat = new BABYLON.StandardMaterial('frontMat', scene);
+                frontMat.diffuseColor = new BABYLON.Color3(1.0, 1.0, 0.7); // pale yellow
+                frontMat.backFaceCulling = false;
+                renderMeshes[0].material = frontMat;
+
+                const backMat = new BABYLON.StandardMaterial('backMat', scene);
+                backMat.diffuseColor = new BABYLON.Color3(0.7, 1.0, 0.7); // pale green
+                backMat.backFaceCulling = false;
+                renderMeshes[1].material = backMat;
+            }
+
             if (currentMesh) showMeshQuality(currentMesh);
-            // Auto-show color-coded B-Rep edges
+            // Auto-show color-coded B-Rep edges on first mesh (has all shared vertices)
             if (currentMesh) showColorCodedEdges(currentMesh);
         }
     } finally { URL.revokeObjectURL(url); }
@@ -177,13 +201,17 @@ function showMeshQuality(mesh) {
     }
 }
 
-function applyCheckerboard(mesh) {
-    const mat = new BABYLON.StandardMaterial('checker', scene);
+function applyCheckerboard(mesh, isBack = false) {
+    const mat = new BABYLON.StandardMaterial(isBack ? 'checkerBack' : 'checker', scene);
     const tex = new BABYLON.Texture('textures/checker.png', scene, false, true, BABYLON.Texture.NEAREST_SAMPLINGMODE);
     tex.wrapU = BABYLON.Texture.MIRROR_ADDRESSMODE;
     tex.wrapV = BABYLON.Texture.MIRROR_ADDRESSMODE;
     tex.uScale = 2.0; tex.vScale = 2.0;
     mat.diffuseTexture = tex;
+    if (isBack) {
+        // Grey/white for back face
+        mat.diffuseColor = new BABYLON.Color3(0.7, 0.7, 0.7);
+    }
     mat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
     mat.backFaceCulling = false;
     mesh.material = mat;
