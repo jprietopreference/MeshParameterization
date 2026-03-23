@@ -1467,8 +1467,7 @@ int main(int argc, char* argv[]) {
                   << " (score=" << best.score() << ")" << std::endl;
 
         // Re-apply original normals: map UVs from welded result back to split-vertex input.
-        // Skip if the result came from split-and-combine (param has more faces than original
-        // due to seam faces duplicated in both halves).
+        // Skip if the result came from split-and-combine (param has more faces than original).
         {
             auto orig = meshparam::load_gltf_from_memory(input_original);
             auto param = meshparam::load_gltf_from_memory(best.glb);
