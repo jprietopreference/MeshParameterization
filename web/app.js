@@ -603,8 +603,133 @@ function showSeamLines(mesh) {
 }
 
 function showFaceEdges(mesh) {
-    if (!mesh.getVerticesData('_FACE_ID')) return; // no face IDs — nothing to show
+    if (!mesh.getVerticesData('_FACE_ID')) return;
     showEdgeOverlay(mesh, '_FACE_ID', new BABYLON.Color3(1.0, 0.6, 0.2), '_face_edges');
+}
+
+function showZPerpendicularLoops(mesh) {
+    const overlayName = '_z_loops';
+    scene.meshes.filter(m => m.name === overlayName).forEach(m => m.dispose());
+    if (!mesh) return;
+
+    const positions = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+    const indices = mesh.getIndices();
+    const faceIdData = mesh.getVerticesData('_FACE_ID');
+    if (!positions || !indices || !faceIdData) return;
+
+    // 1. Find all B-Rep boundary edges (different face IDs on adjacent triangles)
+    const q = v => Math.round(v * 1e4);
+    const pk = i => `${q(positions[i*3])}_${q(positions[i*3+1])}_${q(positions[i*3+2])}`;
+    const edgeMap = new Map();
+    for (let t = 0; t < indices.length; t += 3) {
+        const fid = faceIdData[indices[t]];
+        for (let e = 0; e < 3; e++) {
+            const a = indices[t + e], b = indices[t + (e + 1) % 3];
+            const ka = pk(a), kb = pk(b);
+            const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+            if (!edgeMap.has(key)) edgeMap.set(key, []);
+            edgeMap.get(key).push({ fid, a, b });
+        }
+    }
+
+    // Extract boundary edges (different face IDs)
+    const boundaryEdges = []; // [{a, b}] with vertex indices
+    for (const [, entries] of edgeMap) {
+        if (entries.length < 2) continue;
+        const fids = new Set(entries.map(e => e.fid));
+        if (fids.size > 1) {
+            boundaryEdges.push({ a: entries[0].a, b: entries[0].b });
+        }
+    }
+
+    // 2. Build adjacency graph from boundary edges using position keys
+    const posKey = i => pk(i);
+    const adj = new Map(); // posKey -> [{ posKey, vtxIdx }]
+    for (const { a, b } of boundaryEdges) {
+        const ka = posKey(a), kb = posKey(b);
+        if (!adj.has(ka)) adj.set(ka, []);
+        if (!adj.has(kb)) adj.set(kb, []);
+        adj.get(ka).push({ key: kb, idx: b });
+        adj.get(kb).push({ key: ka, idx: a });
+    }
+
+    // 3. Trace edge loops
+    const visited = new Set();
+    const loops = [];
+    for (const [startKey] of adj) {
+        if (visited.has(startKey)) continue;
+        // Follow chain
+        const loop = [];
+        let curKey = startKey;
+        let prevKey = null;
+        let stuck = false;
+        for (let step = 0; step < 100000; step++) {
+            if (visited.has(curKey) && loop.length > 2) {
+                // Closed loop
+                if (curKey === startKey) loops.push([...loop]);
+                break;
+            }
+            visited.add(curKey);
+            const neighbors = adj.get(curKey) || [];
+            // Pick first unvisited neighbor (or back to start for closing)
+            let next = null;
+            for (const n of neighbors) {
+                if (n.key === prevKey) continue;
+                if (n.key === startKey && loop.length > 2) {
+                    loop.push(n.idx);
+                    next = { key: startKey };
+                    break;
+                }
+                if (!visited.has(n.key)) {
+                    loop.push(n.idx);
+                    next = n;
+                    break;
+                }
+            }
+            if (!next) break;
+            prevKey = curKey;
+            curKey = next.key;
+        }
+    }
+
+    // 4. Filter: keep only loops where all vertices fit in a Z-perpendicular plane
+    const zTolerance = 0.5; // mm — max Z variation within a loop
+    const linePoints = [];
+    let loopCount = 0;
+
+    for (const loop of loops) {
+        if (loop.length < 3) continue;
+        // Check Z spread
+        let zMin = Infinity, zMax = -Infinity;
+        for (const idx of loop) {
+            const z = positions[idx * 3 + 2];
+            if (z < zMin) zMin = z;
+            if (z > zMax) zMax = z;
+        }
+        if (zMax - zMin > zTolerance) continue;
+
+        // This loop lies in a Z-perpendicular plane — draw it
+        loopCount++;
+        for (let i = 0; i < loop.length; i++) {
+            const a = loop[i], b = loop[(i + 1) % loop.length];
+            linePoints.push(
+                new BABYLON.Vector3(positions[a*3], positions[a*3+1], positions[a*3+2]),
+                new BABYLON.Vector3(positions[b*3], positions[b*3+1], positions[b*3+2]),
+            );
+        }
+    }
+
+    console.log(`[z-loops] Found ${loops.length} loops, ${loopCount} Z-perpendicular (tol=${zTolerance}mm)`);
+
+    if (linePoints.length > 0) {
+        const lines = BABYLON.MeshBuilder.CreateLineSystem(overlayName, {
+            lines: Array.from({length: linePoints.length / 2}, (_, i) =>
+                [linePoints[i * 2], linePoints[i * 2 + 1]]),
+        }, scene);
+        lines.color = new BABYLON.Color3(1.0, 0.15, 0.15); // red
+        lines.isPickable = false;
+        lines.parent = mesh.parent || mesh;
+    }
 }
 
 // --- Display options ---
@@ -655,6 +780,14 @@ $('showFaceEdges')?.addEventListener('change', () => {
         if (currentMesh) showFaceEdges(currentMesh);
     } else {
         scene?.meshes.filter(m => m.name === '_face_edges').forEach(m => m.dispose());
+    }
+});
+
+$('showZLoops')?.addEventListener('change', () => {
+    if ($('showZLoops').checked) {
+        if (currentMesh) showZPerpendicularLoops(currentMesh);
+    } else {
+        scene?.meshes.filter(m => m.name === '_z_loops').forEach(m => m.dispose());
     }
 });
 
