@@ -560,6 +560,8 @@ function showEdgeOverlay(mesh, attrName, color, overlayName) {
         }, scene);
         lines.color = color;
         lines.isPickable = false;
+        // Parent to mesh so edge overlay follows the mesh's world transform
+        lines.parent = mesh.parent || mesh;
     }
 }
 
