@@ -375,8 +375,8 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
             all_n.extend(normals)
             all_fid.extend(face_ids)
             all_s.extend(seam_flags)
-            # Offset indices
-            all_idx_parts.append(np.array(tris, dtype=np.uint32))
+            # Offset indices by accumulated vertex count
+            all_idx_parts.append(np.array(tris, dtype=np.uint32) + vert_offset)
             part_offsets.append((vert_offset, nv_part, nf_part))
             vert_offset += nv_part
 
