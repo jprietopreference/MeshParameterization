@@ -88,15 +88,48 @@ static void save_file(const std::string& path, const std::vector<uint8_t>& data)
 }
 
 static std::vector<uint8_t> obj_to_glb(const std::string& obj_path) {
-    Eigen::MatrixXd V;
-    Eigen::MatrixXi F;
-    if (!igl::readOBJ(obj_path, V, F))
+    Eigen::MatrixXd V, TC, N;
+    Eigen::MatrixXi F, FTC, FN;
+    if (!igl::readOBJ(obj_path, V, TC, N, F, FTC, FN))
         throw std::runtime_error("Failed to read OBJ: " + obj_path);
     if (V.rows() == 0 || F.rows() == 0)
         throw std::runtime_error("Empty mesh in " + obj_path);
+
     meshparam::TriMesh mesh;
-    mesh.V = V;
-    mesh.F = F;
+
+    // If OBJ has UVs with different indexing (FTC != F), expand to per-vertex UVs
+    if (TC.rows() > 0 && FTC.rows() == F.rows() && FTC.maxCoeff() < TC.rows()) {
+        // Check if UV indices match vertex indices
+        bool same_indexing = (FTC.array() == F.array()).all();
+        if (same_indexing) {
+            mesh.V = V;
+            mesh.F = F;
+            mesh.UV = TC;
+        } else {
+            // Expand: create new vertex per unique (position, UV) pair
+            int nf = F.rows();
+            // Build expanded mesh
+            Eigen::MatrixXd newV(nf * 3, 3);
+            Eigen::MatrixXd newUV(nf * 3, 2);
+            Eigen::MatrixXi newF(nf, 3);
+            for (int fi = 0; fi < nf; fi++) {
+                for (int j = 0; j < 3; j++) {
+                    int vi = F(fi, j);
+                    int ti = FTC(fi, j);
+                    newV.row(fi * 3 + j) = V.row(vi);
+                    newUV.row(fi * 3 + j) = TC.row(ti);
+                    newF(fi, j) = fi * 3 + j;
+                }
+            }
+            mesh.V = newV;
+            mesh.F = newF;
+            mesh.UV = newUV;
+        }
+    } else {
+        mesh.V = V;
+        mesh.F = F;
+    }
+
     return meshparam::save_gltf_to_memory(mesh);
 }
 
@@ -149,14 +182,13 @@ int main(int argc, char* argv[]) {
         auto glb = load_input(input_path);
 
         // "convert" mode: just output the GLB, no parameterization
+        // Don't weld — preserve UVs from OBJ (artist UVs have split vertices for UV seams)
         if (method == "convert") {
-            auto welded = weld_vertices(glb);
-            heal_mesh(welded, false);
             if (!output_glb_path.empty()) {
-                save_file(output_glb_path, welded);
+                save_file(output_glb_path, glb);
             }
             result.success = true;
-            auto mesh = meshparam::load_gltf_from_memory(welded);
+            auto mesh = meshparam::load_gltf_from_memory(glb);
             result.vertices = mesh.num_vertices();
             result.faces = mesh.num_faces();
             std::string json = result.to_json();

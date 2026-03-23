@@ -16,6 +16,11 @@
                 <label class="file-btn" for="fileInput">Choose File (.glb / .step / .obj)</label>
                 <input type="file" id="fileInput" accept=".glb,.glTF,.step,.stp,.STEP,.STP,.obj,.OBJ" hidden>
                 <div id="fileInfo" class="info-text">No file loaded</div>
+                <div class="row" id="artistRow" style="display:none">
+                    <label class="file-btn-small" for="artistInput">Load Artist UVs (.obj)</label>
+                    <input type="file" id="artistInput" accept=".obj,.OBJ" hidden>
+                    <span id="artistInfo" class="info-text"></span>
+                </div>
             </section>
 
             <section class="panel" id="paramPanel" style="display:none">
@@ -24,6 +29,9 @@
                     <label>Method</label>
                     <select id="methodSelect">
                         <option value="auto" selected>Auto (best of all)</option>
+                        <optgroup label="Gold Standard">
+                            <option value="cm">Composite Majorization (CM)</option>
+                        </optgroup>
                         <optgroup label="Heat-Geodesic">
                             <option value="heat">Heat Geodesic + MDS</option>
                         </optgroup>
@@ -80,9 +88,7 @@
                 <h2>Metrics</h2>
                 <table id="metricsTable">
                     <tr><td>Winner</td><td id="metMethod">-</td></tr>
-                    <tr><td>Vertices</td><td id="metVerts">-</td></tr>
-                    <tr><td>Triangles</td><td id="metTris">-</td></tr>
-                    <tr><td>STEP → GLB</td><td id="metStepTime">-</td></tr>
+                    <tr><td>STEP/OBJ → GLB</td><td id="metStepTime">-</td></tr>
                     <tr><td>Param time</td><td id="metParamTime">-</td></tr>
                     <tr><td colspan="2" style="font-weight:bold;padding-top:6px">Mesh Quality</td></tr>
                     <tr><td>Bounding box</td><td id="metBBox">-</td></tr>
@@ -97,6 +103,9 @@
                     <tr><td>Flipped tris</td><td id="metFlipped">-</td></tr>
                     <tr><td>L2 area dist.</td><td id="metL2Area">-</td></tr>
                     <tr><td>L∞ area dist.</td><td id="metLinfArea">-</td></tr>
+                    <tr id="artistMetricsRow" style="display:none">
+                        <td>Artist SD / flips</td><td id="metArtist">-</td>
+                    </tr>
                     <tr><td colspan="2" style="font-weight:bold;padding-top:6px">Other Metrics</td></tr>
                     <tr><td>Angle (mean/max)</td><td id="metAngle">-</td></tr>
                     <tr><td>Stretch (mean)</td><td id="metStretch">-</td></tr>

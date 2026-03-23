@@ -97,6 +97,22 @@ select:focus, input:focus {
     background: #ff6b6b;
 }
 
+.file-btn-small {
+    display: inline-block;
+    padding: 5px 10px;
+    border: 1px solid #4ecca3;
+    border-radius: 4px;
+    background: transparent;
+    color: #4ecca3;
+    cursor: pointer;
+    font-size: 0.85em;
+    transition: all 0.2s;
+}
+.file-btn-small:hover {
+    background: #4ecca3;
+    color: #1a1a2e;
+}
+
 .action-btn {
     background: #0f3460;
     color: #e0e0e0;

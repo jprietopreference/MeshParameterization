@@ -20,7 +20,7 @@ if (BABYLON.DracoCompression) {
 const API = 'http://localhost:8080';
 
 // --- State ---
-const state = { inputGlb: null, resultGlb: null, fileName: '' };
+const state = { inputGlb: null, resultGlb: null, fileName: '', artistGlb: null };
 
 // --- DOM ---
 const $ = id => document.getElementById(id);
@@ -267,9 +267,38 @@ $('fileInput').addEventListener('change', async (e) => {
             $('showFaceEdges').checked = true;
             showFaceEdges(currentMesh);
         }
+        // Show artist UV loader for OBJ files
+        $('artistRow').style.display = (ext === 'obj') ? 'block' : 'none';
+        state.artistGlb = null;
+        $('artistInfo').textContent = '';
+        $('artistMetricsRow').style.display = 'none';
         setStatus('File loaded. Choose parameterization method.', '');
     } catch (err) {
         setStatus(`Error: ${err.message}`, 'error');
+    }
+});
+
+// --- Artist UV comparison ---
+$('artistInput').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+        setStatus('Loading artist UVs...', 'working');
+        const buffer = await file.arrayBuffer();
+        // Convert OBJ with UVs to GLB via server
+        state.artistGlb = await apiConvertObj(buffer);
+        $('artistInfo').textContent = `${file.name} loaded`;
+
+        // Show artist mesh with checkerboard
+        state.resultGlb = state.artistGlb;
+        await loadGlb(state.artistGlb, true);
+        $('viewPanel').style.display = 'block';
+        $('exportPanel').style.display = 'block';
+        setMetric('metMethod', 'Artist UVs');
+        setStatus(`Artist UVs: ${file.name}`, '');
+    } catch (err) {
+        $('artistInfo').textContent = 'Failed';
+        setStatus(`Error loading artist UVs: ${err.message}`, 'error');
     }
 });
 
