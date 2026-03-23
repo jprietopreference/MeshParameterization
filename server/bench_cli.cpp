@@ -178,14 +178,12 @@ int main(int argc, char* argv[]) {
     std::string input_path = argv[2];
     std::string output_glb_path;
     std::string json_path;
-    bool auto_seam = false;
 
     // Parse optional args
     for (int i = 3; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--output-glb" && i + 1 < argc) output_glb_path = argv[++i];
         else if (arg == "--json" && i + 1 < argc) json_path = argv[++i];
-        else if (arg == "--auto-seam") auto_seam = true;
         else if (json_path.empty() && arg[0] != '-') json_path = arg;
     }
 
@@ -217,90 +215,184 @@ int main(int argc, char* argv[]) {
         heal_mesh(welded, false);
         welded = extract_largest_component(welded);
 
-        // Auto-seam: use _SEAM attribute from GLB (set by Gmsh pipeline from B-Rep edge loop)
-        // to cut the welded mesh along the seam path
-        std::vector<uint8_t> welded_cut = welded;
-        if (auto_seam) {
-            // Read _SEAM from original GLB, map seam vertices to welded mesh
-            auto orig_mesh = meshparam::load_gltf_from_memory(glb);
-            if (orig_mesh.has_seam()) {
-                auto weld_mesh = meshparam::load_gltf_from_memory(welded);
-                struct V3Hash {
-                    size_t operator()(const std::array<int64_t,3>& v) const {
-                        size_t h = 0;
-                        for (auto x : v) h ^= std::hash<int64_t>()(x) + 0x9e3779b9 + (h<<6) + (h>>2);
-                        return h;
-                    }
-                };
-                std::unordered_map<std::array<int64_t,3>, int, V3Hash> weld_pos;
-                for (int i = 0; i < weld_mesh.num_vertices(); i++) {
+        // Auto-detect _SEAM: if present, split mesh into top/bottom halves,
+        // parameterize top with the requested method, bottom with LSCM, combine.
+        // If no _SEAM, fall back to BFS geodesic seam (default).
+        auto orig_mesh = meshparam::load_gltf_from_memory(glb);
+        bool has_seam = orig_mesh.has_seam();
+        bool did_split = false;
+
+        if (has_seam) {
+            auto weld_mesh = meshparam::load_gltf_from_memory(welded);
+            int wnv = weld_mesh.num_vertices(), wnf = weld_mesh.num_faces();
+
+            // Map seam from original to welded mesh
+            struct V3Hash {
+                size_t operator()(const std::array<int64_t,3>& v) const {
+                    size_t h = 0;
+                    for (auto x : v) h ^= std::hash<int64_t>()(x) + 0x9e3779b9 + (h<<6) + (h>>2);
+                    return h;
+                }
+            };
+            std::unordered_map<std::array<int64_t,3>, int, V3Hash> weld_pos;
+            for (int i = 0; i < wnv; i++) {
+                std::array<int64_t,3> k = {
+                    (int64_t)std::round(weld_mesh.V(i,0)*1e4),
+                    (int64_t)std::round(weld_mesh.V(i,1)*1e4),
+                    (int64_t)std::round(weld_mesh.V(i,2)*1e4)};
+                weld_pos[k] = i;
+            }
+            std::set<int> w_seam;
+            double seam_z = 0;
+            int seam_count = 0;
+            for (int i = 0; i < orig_mesh.num_vertices(); i++) {
+                if (orig_mesh.seam(i) > 0.5) {
                     std::array<int64_t,3> k = {
-                        (int64_t)std::round(weld_mesh.V(i,0)*1e4),
-                        (int64_t)std::round(weld_mesh.V(i,1)*1e4),
-                        (int64_t)std::round(weld_mesh.V(i,2)*1e4)};
-                    weld_pos[k] = i;
-                }
-                // Find welded vertices that are seam vertices
-                std::vector<int> seam_verts;
-                for (int i = 0; i < orig_mesh.num_vertices(); i++) {
-                    if (orig_mesh.seam(i) > 0.5) {
-                        std::array<int64_t,3> k = {
-                            (int64_t)std::round(orig_mesh.V(i,0)*1e4),
-                            (int64_t)std::round(orig_mesh.V(i,1)*1e4),
-                            (int64_t)std::round(orig_mesh.V(i,2)*1e4)};
-                        auto it = weld_pos.find(k);
-                        if (it != weld_pos.end()) seam_verts.push_back(it->second);
+                        (int64_t)std::round(orig_mesh.V(i,0)*1e4),
+                        (int64_t)std::round(orig_mesh.V(i,1)*1e4),
+                        (int64_t)std::round(orig_mesh.V(i,2)*1e4)};
+                    auto it = weld_pos.find(k);
+                    if (it != weld_pos.end()) {
+                        w_seam.insert(it->second);
+                        seam_z += weld_mesh.V(it->second, 2);
+                        seam_count++;
                     }
                 }
-                // Deduplicate
-                std::sort(seam_verts.begin(), seam_verts.end());
-                seam_verts.erase(std::unique(seam_verts.begin(), seam_verts.end()), seam_verts.end());
+            }
+            if (seam_count > 0) seam_z /= seam_count;
 
-                if (seam_verts.size() >= 3) {
-                    std::cerr << "[auto-seam] " << seam_verts.size()
-                              << " seam vertices from _SEAM attribute" << std::endl;
-                    welded_cut = cut_mesh_along_loop(welded, seam_verts);
+            if (w_seam.size() >= 3) {
+                // Split faces into top/bottom by centroid Z, seam faces go to both
+                auto split_half = [&](bool is_top) -> std::vector<uint8_t> {
+                    std::vector<int> face_list;
+                    for (int fi = 0; fi < wnf; fi++) {
+                        int n_on_seam = 0;
+                        for (int j = 0; j < 3; j++)
+                            if (w_seam.count(weld_mesh.F(fi, j))) n_on_seam++;
+                        if (n_on_seam >= 2) {
+                            face_list.push_back(fi); // seam face: include in both
+                        } else {
+                            double cz = (weld_mesh.V(weld_mesh.F(fi,0), 2) +
+                                        weld_mesh.V(weld_mesh.F(fi,1), 2) +
+                                        weld_mesh.V(weld_mesh.F(fi,2), 2)) / 3.0;
+                            if (is_top ? (cz >= seam_z) : (cz < seam_z))
+                                face_list.push_back(fi);
+                        }
+                    }
+                    // Build submesh
+                    std::vector<bool> used(wnv, false);
+                    for (int fi : face_list)
+                        for (int j = 0; j < 3; j++) used[weld_mesh.F(fi, j)] = true;
+                    std::vector<int> old2new(wnv, -1);
+                    int nn = 0;
+                    for (int i = 0; i < wnv; i++) if (used[i]) old2new[i] = nn++;
+
+                    meshparam::TriMesh sub;
+                    sub.V.resize(nn, 3);
+                    for (int i = 0; i < wnv; i++)
+                        if (old2new[i] >= 0) sub.V.row(old2new[i]) = weld_mesh.V.row(i);
+                    sub.F.resize(face_list.size(), 3);
+                    for (size_t fi = 0; fi < face_list.size(); fi++)
+                        for (int j = 0; j < 3; j++)
+                            sub.F(fi, j) = old2new[weld_mesh.F(face_list[fi], j)];
+                    return meshparam::save_gltf_to_memory(sub);
+                };
+
+                auto top_glb = split_half(true);
+                auto bot_glb = split_half(false);
+                auto top_mesh = meshparam::load_gltf_from_memory(top_glb);
+                auto bot_mesh = meshparam::load_gltf_from_memory(bot_glb);
+
+                std::cerr << "[split] Top: " << top_mesh.num_vertices() << "v "
+                          << top_mesh.num_faces() << "f, Bottom: "
+                          << bot_mesh.num_vertices() << "v "
+                          << bot_mesh.num_faces() << "f" << std::endl;
+
+                // Parameterize top with requested method
+                MethodResult top_result;
+                if (method == "heat") top_result = run_heat(top_glb, false);
+                else if (method == "lscm") top_result = run_lscm(top_glb);
+                else if (method == "igl_arap") top_result = run_igl_arap(top_glb);
+                else if (method == "slim") top_result = run_slim(top_glb);
+                else if (method == "stein_admm") top_result = run_stein(top_glb);
+                else if (method == "cgal_conformal") top_result = run_cgal(top_glb, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal", false, {});
+                else if (method == "cgal_arap") top_result = run_cgal(top_glb, cgalparam::ParamMethod::ARAP, "cgal_arap", false, {});
+                else if (method == "cgal_authalic") top_result = run_cgal(top_glb, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic", false, {});
+#ifdef HAS_COMPMAJOR
+                else if (method == "cm") top_result = run_cm(top_glb);
+#endif
+                else top_result.error = "Unknown method: " + method;
+
+                // Parameterize bottom with LSCM (always works, fast)
+                auto bot_result = run_lscm(bot_glb);
+
+                if (top_result.success) {
+                    // Combine: merge both parameterized halves into one GLB
+                    auto top_param = meshparam::load_gltf_from_memory(top_result.glb);
+                    auto bot_param = bot_result.success ?
+                        meshparam::load_gltf_from_memory(bot_result.glb) : bot_mesh;
+
+                    int tnv = top_param.num_vertices(), bnv = bot_param.num_vertices();
+                    int tnf = top_param.num_faces(), bnf = bot_param.num_faces();
+
+                    meshparam::TriMesh combined;
+                    combined.V.resize(tnv + bnv, 3);
+                    combined.V.topRows(tnv) = top_param.V;
+                    combined.V.bottomRows(bnv) = bot_param.V;
+                    combined.F.resize(tnf + bnf, 3);
+                    combined.F.topRows(tnf) = top_param.F;
+                    combined.F.bottomRows(bnf) = bot_param.F.array() + tnv;
+                    if (top_param.has_uvs()) {
+                        combined.UV.resize(tnv + bnv, 2);
+                        combined.UV.topRows(tnv) = top_param.UV;
+                        if (bot_param.has_uvs())
+                            combined.UV.bottomRows(bnv) = bot_param.UV;
+                        else
+                            combined.UV.bottomRows(bnv).setZero();
+                    }
+                    if (top_param.has_normals() || bot_param.has_normals()) {
+                        combined.N.resize(tnv + bnv, 3);
+                        if (top_param.has_normals()) combined.N.topRows(tnv) = top_param.N;
+                        if (bot_param.has_normals()) combined.N.bottomRows(bnv) = bot_param.N;
+                    }
+
+                    result = top_result; // metrics from top half (the important one)
+                    result.glb = meshparam::save_gltf_to_memory(combined);
+                    result.vertices = tnv + bnv;
+                    result.faces = tnf + bnf;
+                    did_split = true;
+                    std::cerr << "[split] Combined: " << result.vertices << "v "
+                              << result.faces << "f (top: " << top_result.method << ")" << std::endl;
                 }
             }
         }
 
-        // If auto-seam produced a seam, also try split mode:
-        // split mesh into two halves along the seam, parameterize each independently
-        if (auto_seam && welded_cut.data() != welded.data()) {
-            // The welded_cut mesh has boundary from the seam cut
-            // Check if boundary_loop works now
-            auto cut_mesh = meshparam::load_gltf_from_memory(welded_cut);
-            Eigen::VectorXi bnd;
-            igl::boundary_loop(cut_mesh.F, bnd);
-            if (bnd.size() > 0) {
-                std::cerr << "[auto-seam] Cut mesh has boundary: " << bnd.size() << " vertices" << std::endl;
-            }
-        }
-
-        // Dispatch method — use welded_cut (pre-cut if auto-seam) for methods needing boundary
+        if (!did_split) {
+        // No seam or split failed — standard single-mesh approach with BFS fallback
         if (method == "heat") {
             result = run_heat(welded, false);
         } else if (method == "lscm") {
-            result = run_lscm(welded_cut);
+            result = run_lscm(welded);
         } else if (method == "igl_arap") {
-            result = run_igl_arap(welded_cut);
+            result = run_igl_arap(welded);
         } else if (method == "slim") {
-            result = run_slim(welded_cut);
+            result = run_slim(welded);
         } else if (method == "stein_admm") {
-            result = run_stein(welded_cut);
+            result = run_stein(welded);
         } else if (method == "cgal_conformal") {
-            result = run_cgal(welded_cut, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal", false, {});
+            result = run_cgal(welded, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal", false, {});
         } else if (method == "cgal_arap") {
-            result = run_cgal(welded_cut, cgalparam::ParamMethod::ARAP, "cgal_arap", false, {});
+            result = run_cgal(welded, cgalparam::ParamMethod::ARAP, "cgal_arap", false, {});
         } else if (method == "cgal_authalic") {
-            result = run_cgal(welded_cut, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic", false, {});
+            result = run_cgal(welded, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic", false, {});
 #ifdef HAS_COMPMAJOR
         } else if (method == "cm") {
-            result = run_cm(welded_cut);
+            result = run_cm(welded);
 #endif
         } else {
             result.error = "Unknown method: " + method;
         }
+        } // end if (!did_split)
 
         // Write result GLB if requested
         if (result.success && !output_glb_path.empty() && !result.glb.empty()) {

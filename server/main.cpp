@@ -1249,7 +1249,6 @@ int main(int argc, char* argv[]) {
     svr.Post("/api/parameterize", [&](const httplib::Request& req, httplib::Response& res) {
         std::string forced_method = req.has_param("method") ? req.get_param_value("method") : "auto";
         int timeout_sec = req.has_param("timeout") ? std::stoi(req.get_param_value("timeout")) : 60;
-        bool auto_seam = req.has_param("autoSeam") && req.get_param_value("autoSeam") == "true";
 
         std::vector<uint8_t> input(req.body.begin(), req.body.end());
         std::vector<uint8_t> input_original = input;
@@ -1325,7 +1324,7 @@ int main(int argc, char* argv[]) {
                 + " \"" + tmp_input + "\""
                 + " --json \"" + procs[i].json_path + "\""
                 + " --output-glb \"" + procs[i].glb_path + "\""
-                + (auto_seam ? " --auto-seam" : "");
+;
 
 #ifdef _WIN32
             STARTUPINFOA si = {}; si.cb = sizeof(si);
