@@ -601,6 +601,7 @@ function showSeamLines(mesh) {
 }
 
 function showFaceEdges(mesh) {
+    if (!mesh.getVerticesData('_FACE_ID')) return; // no face IDs — nothing to show
     showEdgeOverlay(mesh, '_FACE_ID', new BABYLON.Color3(1.0, 0.6, 0.2), '_face_edges');
 }
 
