@@ -58,6 +58,7 @@
 #include <fstream>
 #include <cmath>
 #include <unordered_map>
+#include <map>
 #include <array>
 #include <algorithm>
 
@@ -97,33 +98,45 @@ static std::vector<uint8_t> obj_to_glb(const std::string& obj_path) {
 
     meshparam::TriMesh mesh;
 
-    // If OBJ has UVs with different indexing (FTC != F), expand to per-vertex UVs
+    // If OBJ has UVs with different indexing (FTC != F), build unique (V,UV) pairs
     if (TC.rows() > 0 && FTC.rows() == F.rows() && FTC.maxCoeff() < TC.rows()) {
-        // Check if UV indices match vertex indices
         bool same_indexing = (FTC.array() == F.array()).all();
         if (same_indexing) {
             mesh.V = V;
             mesh.F = F;
             mesh.UV = TC;
         } else {
-            // Expand: create new vertex per unique (position, UV) pair
+            // Build unique (vertex_idx, uv_idx) pairs to avoid face-soup expansion
             int nf = F.rows();
-            // Build expanded mesh
-            Eigen::MatrixXd newV(nf * 3, 3);
-            Eigen::MatrixXd newUV(nf * 3, 2);
+            std::map<std::pair<int,int>, int> pair_to_new;
+            std::vector<Eigen::Vector3d> newV_vec;
+            std::vector<Eigen::Vector2d> newUV_vec;
             Eigen::MatrixXi newF(nf, 3);
+
             for (int fi = 0; fi < nf; fi++) {
                 for (int j = 0; j < 3; j++) {
-                    int vi = F(fi, j);
-                    int ti = FTC(fi, j);
-                    newV.row(fi * 3 + j) = V.row(vi);
-                    newUV.row(fi * 3 + j) = TC.row(ti);
-                    newF(fi, j) = fi * 3 + j;
+                    auto key = std::make_pair(F(fi, j), FTC(fi, j));
+                    auto it = pair_to_new.find(key);
+                    if (it != pair_to_new.end()) {
+                        newF(fi, j) = it->second;
+                    } else {
+                        int idx = static_cast<int>(newV_vec.size());
+                        newV_vec.push_back(V.row(F(fi, j)));
+                        newUV_vec.push_back(TC.row(FTC(fi, j)));
+                        pair_to_new[key] = idx;
+                        newF(fi, j) = idx;
+                    }
                 }
             }
-            mesh.V = newV;
+
+            int nn = static_cast<int>(newV_vec.size());
+            mesh.V.resize(nn, 3);
+            mesh.UV.resize(nn, 2);
+            for (int i = 0; i < nn; i++) {
+                mesh.V.row(i) = newV_vec[i];
+                mesh.UV.row(i) = newUV_vec[i];
+            }
             mesh.F = newF;
-            mesh.UV = newUV;
         }
     } else {
         mesh.V = V;
