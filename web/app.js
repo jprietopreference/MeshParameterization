@@ -267,38 +267,21 @@ $('fileInput').addEventListener('change', async (e) => {
             $('showFaceEdges').checked = true;
             showFaceEdges(currentMesh);
         }
-        // Show artist UV loader for OBJ files
-        $('artistRow').style.display = (ext === 'obj') ? 'block' : 'none';
+        // Auto-detect artist UVs for OBJ files
         state.artistGlb = null;
-        $('artistInfo').textContent = '';
+        if (ext === 'obj') {
+            try {
+                const r = await fetch(`${API}/api/artist-uvs/${encodeURIComponent(file.name)}`);
+                if (r.ok) {
+                    state.artistGlb = await r.arrayBuffer();
+                    $('fileInfo').textContent += ' (artist UVs available)';
+                }
+            } catch (e) { /* no artist UVs, that's fine */ }
+        }
         $('artistMetricsRow').style.display = 'none';
         setStatus('File loaded. Choose parameterization method.', '');
     } catch (err) {
         setStatus(`Error: ${err.message}`, 'error');
-    }
-});
-
-// --- Artist UV comparison ---
-$('artistInput').addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    try {
-        setStatus('Loading artist UVs...', 'working');
-        const buffer = await file.arrayBuffer();
-        // Convert OBJ with UVs to GLB via server
-        state.artistGlb = await apiConvertObj(buffer);
-        $('artistInfo').textContent = `${file.name} loaded`;
-
-        // Show artist mesh with checkerboard
-        state.resultGlb = state.artistGlb;
-        await loadGlb(state.artistGlb, true);
-        $('viewPanel').style.display = 'block';
-        $('exportPanel').style.display = 'block';
-        setMetric('metMethod', 'Artist UVs');
-        setStatus(`Artist UVs: ${file.name}`, '');
-    } catch (err) {
-        $('artistInfo').textContent = 'Failed';
-        setStatus(`Error loading artist UVs: ${err.message}`, 'error');
     }
 });
 
@@ -367,6 +350,22 @@ $('paramBtn').addEventListener('click', async () => {
                         `<td>${m.success ? fmtSD(m.score) : '-'}</td>`;
                     tbody.appendChild(tr);
                 }
+                // Add artist row if available
+                if (state.artistGlb) {
+                    const tr = document.createElement('tr');
+                    tr.style.color = '#ffb347'; // orange for artist
+                    tr.style.cursor = 'pointer';
+                    tr.style.borderTop = '1px solid #555';
+                    tr.addEventListener('click', async () => {
+                        state.resultGlb = state.artistGlb;
+                        await loadGlb(state.artistGlb, true);
+                        setMetric('metMethod', 'Artist UVs');
+                        setStatus('Viewing: Artist UVs', '');
+                    });
+                    tr.innerHTML = `<td>\u{1F3A8} Artist UVs</td><td>-</td><td>-</td><td>-</td><td>ref</td>`;
+                    tbody.appendChild(tr);
+                }
+
                 $('comparisonPanel').style.display = 'block';
             } catch (e) {}
         }

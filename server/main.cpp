@@ -1211,6 +1211,7 @@ int main(int argc, char* argv[]) {
 
     std::string remesh_cli = "";
     std::string acis_cli = "";
+    std::string benchmark_dir = "../benchmark/Obj_Files";
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--port" && i + 1 < argc) port = std::stoi(argv[++i]);
@@ -1218,6 +1219,7 @@ int main(int argc, char* argv[]) {
         if (arg == "--occ-cli" && i + 1 < argc) occ_cli = argv[++i];
         if (arg == "--acis-cli" && i + 1 < argc) acis_cli = argv[++i];
         if (arg == "--gmsh-cli" && i + 1 < argc) gmsh_cli = argv[++i];
+        if (arg == "--benchmark-dir" && i + 1 < argc) benchmark_dir = argv[++i];
         if (arg == "--remesh-cli" && i + 1 < argc) remesh_cli = argv[++i];
         if (arg == "--threads" && i + 1 < argc) threads = std::stoi(argv[++i]);
     }
@@ -1636,6 +1638,77 @@ int main(int argc, char* argv[]) {
             f.close();
             std::remove(tmp_glb.c_str());
 
+            res.set_content(std::string(data.begin(), data.end()), "model/gltf-binary");
+        } catch (const std::exception& e) {
+            res.status = 500;
+            res.set_content("{\"error\":\"" + std::string(e.what()) + "\"}", "application/json");
+        }
+    });
+
+    // --- Artist UV lookup: find matching artist OBJ and convert to GLB ---
+    svr.Get("/api/artist-uvs/:filename", [&](const httplib::Request& req, httplib::Response& res) {
+        std::string filename = req.path_params.at("filename");
+        // Search in Artist_UVs/Cut/ and Artist_UVs/Uncut/
+        std::vector<std::string> search_dirs = {
+            benchmark_dir + "/Artist_UVs/Cut/",
+            benchmark_dir + "/Artist_UVs/Uncut/",
+        };
+        std::string artist_path;
+        for (auto& dir : search_dirs) {
+            std::string path = dir + filename;
+            if (std::ifstream(path).good()) { artist_path = path; break; }
+        }
+        if (artist_path.empty()) {
+            res.status = 404;
+            res.set_content("{\"error\":\"No artist UVs for " + filename + "\"}", "application/json");
+            return;
+        }
+        // Convert artist OBJ to GLB (preserving UVs) via bench CLI
+        try {
+            const char* tmp_dir = std::getenv("TEMP");
+            if (!tmp_dir) tmp_dir = std::getenv("TMP");
+            if (!tmp_dir) tmp_dir = ".";
+            std::string tmp_glb = std::string(tmp_dir) + "/meshparam_artist.glb";
+
+            char self_path[4096] = {};
+#ifdef _WIN32
+            GetModuleFileNameA(nullptr, self_path, sizeof(self_path));
+#endif
+            std::string self_dir = std::string(self_path);
+            auto pos = self_dir.find_last_of("\\/");
+            if (pos != std::string::npos) self_dir = self_dir.substr(0, pos + 1);
+            std::string bench_exe = self_dir + "meshparam_bench.exe";
+
+            std::string cmd = "\"" + bench_exe + "\" convert \"" + artist_path + "\" --output-glb \"" + tmp_glb + "\"";
+#ifdef _WIN32
+            STARTUPINFOA si = {}; si.cb = sizeof(si);
+            si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
+            PROCESS_INFORMATION pi = {};
+            int ret = -1;
+            if (CreateProcessA(bench_exe.c_str(), const_cast<char*>(cmd.c_str()),
+                              nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                WaitForSingleObject(pi.hProcess, 30000);
+                DWORD exit_code = 1;
+                GetExitCodeProcess(pi.hProcess, &exit_code);
+                ret = (exit_code == 0) ? 0 : 1;
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+            }
+#else
+            int ret = std::system(cmd.c_str());
+#endif
+            if (ret != 0) {
+                std::remove(tmp_glb.c_str());
+                throw std::runtime_error("Artist OBJ conversion failed");
+            }
+            std::ifstream f(tmp_glb, std::ios::binary | std::ios::ate);
+            size_t sz = f.tellg(); f.seekg(0);
+            std::vector<uint8_t> data(sz);
+            f.read(reinterpret_cast<char*>(data.data()), sz);
+            f.close();
+            std::remove(tmp_glb.c_str());
+
+            res.set_header("X-Artist-File", artist_path);
             res.set_content(std::string(data.begin(), data.end()), "model/gltf-binary");
         } catch (const std::exception& e) {
             res.status = 500;
