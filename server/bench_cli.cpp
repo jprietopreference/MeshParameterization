@@ -1,10 +1,11 @@
-// Mesh Parameterization Benchmark CLI
-// Runs a single parameterization method on an OBJ file.
+// Mesh Parameterization CLI Tool
+// Runs a single parameterization method on an OBJ or GLB file.
 // Process isolation: each invocation is a separate process.
 //
-// Usage: meshparam_bench <method> <input.obj> [output.json]
-// Methods: heat, lscm, igl_arap, slim, stein_admm,
-//          cgal_conformal, cgal_arap, cgal_authalic
+// Usage: meshparam_bench <method> <input.obj|.glb> [--output-glb <path>] [--json <path>]
+//        meshparam_bench convert <input.obj> [--output-glb <path>]
+// Methods: heat, lscm, igl_arap, slim, stein_admm, cm,
+//          cgal_conformal, cgal_arap, cgal_authalic, convert
 
 #include "meshparam/gltf_io.h"
 #include "meshparam/parameterizer.h"
@@ -58,35 +59,60 @@
 #include <cmath>
 #include <unordered_map>
 #include <array>
-
-// ============================================================
-// Include shared method code from main.cpp via the same pattern
-// (MethodResult, weld, heal, cut, run_* functions)
-// ============================================================
-
-// --- Shared: pulled from main.cpp lines 66-890 ---
-// Rather than duplicating, we include the same logic.
-// The key structures and functions are defined inline below.
+#include <algorithm>
 
 #include "methods.inc"
 
 // ============================================================
-// OBJ → in-memory GLB conversion
+// File I/O helpers
 // ============================================================
-std::vector<uint8_t> obj_to_glb(const std::string& obj_path) {
+static bool ends_with(const std::string& s, const std::string& suffix) {
+    if (suffix.size() > s.size()) return false;
+    return std::equal(suffix.rbegin(), suffix.rend(), s.rbegin(),
+        [](char a, char b) { return tolower(a) == tolower(b); });
+}
+
+static std::vector<uint8_t> load_file(const std::string& path) {
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f) throw std::runtime_error("Cannot open: " + path);
+    size_t sz = f.tellg(); f.seekg(0);
+    std::vector<uint8_t> data(sz);
+    f.read(reinterpret_cast<char*>(data.data()), sz);
+    return data;
+}
+
+static void save_file(const std::string& path, const std::vector<uint8_t>& data) {
+    std::ofstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("Cannot write: " + path);
+    f.write(reinterpret_cast<const char*>(data.data()), data.size());
+}
+
+static std::vector<uint8_t> obj_to_glb(const std::string& obj_path) {
     Eigen::MatrixXd V;
     Eigen::MatrixXi F;
-    if (!igl::readOBJ(obj_path, V, F)) {
+    if (!igl::readOBJ(obj_path, V, F))
         throw std::runtime_error("Failed to read OBJ: " + obj_path);
-    }
-    if (V.rows() == 0 || F.rows() == 0) {
+    if (V.rows() == 0 || F.rows() == 0)
         throw std::runtime_error("Empty mesh in " + obj_path);
-    }
-
     meshparam::TriMesh mesh;
     mesh.V = V;
     mesh.F = F;
     return meshparam::save_gltf_to_memory(mesh);
+}
+
+static std::vector<uint8_t> load_input(const std::string& path) {
+    if (ends_with(path, ".glb") || ends_with(path, ".gltf")) {
+        return load_file(path);
+    } else if (ends_with(path, ".obj")) {
+        return obj_to_glb(path);
+    } else {
+        // Try GLB first (check magic bytes), fall back to OBJ
+        auto data = load_file(path);
+        if (data.size() >= 4 && data[0] == 'g' && data[1] == 'l' && data[2] == 'T' && data[3] == 'F') {
+            return data;
+        }
+        return obj_to_glb(path);
+    }
 }
 
 // ============================================================
@@ -94,27 +120,53 @@ std::vector<uint8_t> obj_to_glb(const std::string& obj_path) {
 // ============================================================
 int main(int argc, char* argv[]) {
     if (argc < 3) {
-        std::cerr << "Usage: meshparam_bench <method> <input.obj> [output.json]" << std::endl;
-        std::cerr << "Methods: heat, lscm, igl_arap, slim, stein_admm," << std::endl;
-        std::cerr << "         cgal_conformal, cgal_arap, cgal_authalic" << std::endl;
+        std::cerr << "Usage: meshparam_bench <method> <input.obj|.glb> [options]" << std::endl;
+        std::cerr << "  --output-glb <path>   Write result GLB to file" << std::endl;
+        std::cerr << "  --json <path>         Write metrics JSON to file (default: stdout)" << std::endl;
+        std::cerr << "Methods: heat, lscm, igl_arap, slim, stein_admm, cm," << std::endl;
+        std::cerr << "         cgal_conformal, cgal_arap, cgal_authalic, convert" << std::endl;
         return 1;
     }
 
     std::string method = argv[1];
     std::string input_path = argv[2];
-    std::string output_path = (argc > 3) ? argv[3] : "";
+    std::string output_glb_path;
+    std::string json_path;
+
+    // Parse optional args
+    for (int i = 3; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--output-glb" && i + 1 < argc) output_glb_path = argv[++i];
+        else if (arg == "--json" && i + 1 < argc) json_path = argv[++i];
+        else if (json_path.empty() && arg[0] != '-') json_path = arg; // legacy positional
+    }
 
     MethodResult result;
     result.method = method;
 
     try {
-        // Load OBJ → GLB
-        auto glb = obj_to_glb(input_path);
+        // Load input (OBJ or GLB)
+        auto glb = load_input(input_path);
 
-        // Weld split vertices
+        // "convert" mode: just output the GLB, no parameterization
+        if (method == "convert") {
+            auto welded = weld_vertices(glb);
+            heal_mesh(welded, false);
+            if (!output_glb_path.empty()) {
+                save_file(output_glb_path, welded);
+            }
+            result.success = true;
+            auto mesh = meshparam::load_gltf_from_memory(welded);
+            result.vertices = mesh.num_vertices();
+            result.faces = mesh.num_faces();
+            std::string json = result.to_json();
+            if (json_path.empty()) std::cout << json << std::endl;
+            else { std::ofstream f(json_path); f << json << std::endl; }
+            return 0;
+        }
+
+        // Weld + heal
         auto welded = weld_vertices(glb);
-
-        // Heal degenerate triangles
         heal_mesh(welded, false);
 
         // Dispatch method
@@ -141,17 +193,22 @@ int main(int argc, char* argv[]) {
         } else {
             result.error = "Unknown method: " + method;
         }
+
+        // Write result GLB if requested
+        if (result.success && !output_glb_path.empty() && !result.glb.empty()) {
+            save_file(output_glb_path, result.glb);
+        }
+
     } catch (const std::exception& e) {
         result.error = e.what();
     }
 
     // Output JSON
     std::string json = result.to_json();
-
-    if (output_path.empty() || output_path == "-") {
+    if (json_path.empty() || json_path == "-") {
         std::cout << json << std::endl;
     } else {
-        std::ofstream f(output_path);
+        std::ofstream f(json_path);
         f << json << std::endl;
     }
 

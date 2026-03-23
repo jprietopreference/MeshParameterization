@@ -187,6 +187,14 @@ async function apiTessellate(stepBuffer) {
     return await r.arrayBuffer();
 }
 
+async function apiConvertObj(objBuffer) {
+    const r = await fetch(`${API}/api/convert/obj`, {
+        method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: objBuffer,
+    });
+    if (!r.ok) { const e = await r.text(); throw new Error(e); }
+    return await r.arrayBuffer();
+}
+
 async function apiParameterize(glbBuffer, method, viewWeighted, forceHeal) {
     const params = new URLSearchParams();
     if (method !== 'auto') params.set('method', method);
@@ -224,6 +232,13 @@ $('fileInput').addEventListener('change', async (e) => {
             state.inputGlb = await apiTessellate(buffer);
             setMetric('metStepTime', `${(performance.now()-t0).toFixed(0)} ms`);
             $('fileInfo').textContent = `${file.name} - STEP (Gmsh)`;
+        } else if (ext === 'obj') {
+            $('fileInfo').textContent = `${file.name} (${(file.size/1024).toFixed(1)} KB) - OBJ`;
+            setStatus('OBJ → GLB (converting)...', 'working');
+            const t0 = performance.now();
+            state.inputGlb = await apiConvertObj(buffer);
+            setMetric('metStepTime', `${(performance.now()-t0).toFixed(0)} ms`);
+            $('fileInfo').textContent = `${file.name} - OBJ`;
         } else {
             $('fileInfo').textContent = `${file.name} (${(file.size/1024).toFixed(1)} KB) - GLB`;
             state.inputGlb = buffer;

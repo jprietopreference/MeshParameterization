@@ -63,6 +63,10 @@
 #include <array>
 #include <random>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 // ============================================================
 // Vertex welding: merge split vertices (same position) for parameterization
 // ============================================================
@@ -1239,118 +1243,195 @@ int main(int argc, char* argv[]) {
         res.set_content("{\"status\":\"ok\"}", "application/json");
     });
 
-    // --- Broker: run all methods, pick best ---
-    svr.Post("/api/parameterize", [&remesh_cli](const httplib::Request& req, httplib::Response& res) {
+    // --- Broker: run all methods via subprocesses, pick best ---
+    svr.Post("/api/parameterize", [&](const httplib::Request& req, httplib::Response& res) {
         std::string forced_method = req.has_param("method") ? req.get_param_value("method") : "auto";
-        bool view_weighted = req.has_param("viewWeighted") && req.get_param_value("viewWeighted") == "true";
+        int timeout_sec = req.has_param("timeout") ? std::stoi(req.get_param_value("timeout")) : 60;
 
         std::vector<uint8_t> input(req.body.begin(), req.body.end());
-
-        // Always auto-detect and heal degenerate triangles.
-        // The "heal" flag forces healing even for near-degenerate cases (looser threshold).
-        // Save original input (with OCC split-vertex normals) for seam analysis
         std::vector<uint8_t> input_original = input;
 
-        bool force_heal = req.has_param("heal") && req.get_param_value("heal") == "true";
-        auto heal1 = heal_mesh(input, force_heal);
+        // Find bench CLI executable (next to this server binary)
+        std::string bench_exe;
+        {
+            // Derive path from argv[0] or use known location
+            const char* tmp_dir = std::getenv("TEMP");
+            if (!tmp_dir) tmp_dir = std::getenv("TMP");
+            if (!tmp_dir) tmp_dir = ".";
 
-        // Weld split vertices for parameterization
-        std::vector<uint8_t> input_for_param = weld_vertices(input);
-
-        // Heal again after welding
-        auto heal2 = heal_mesh(input_for_param, force_heal);
-
-        // Combine heal stats
-        HealStats heal_total;
-        heal_total.removed = heal1.removed + heal2.removed;
-        heal_total.perturbed = heal1.perturbed + heal2.perturbed;
-        heal_total.forced = force_heal;
-
-        // Optionally create a remeshed version for a parallel path
-        std::vector<uint8_t> input_remeshed;
-        bool has_remesh = !remesh_cli.empty();
-        if (has_remesh && forced_method == "auto") {
-            try {
-                auto t_r0 = std::chrono::high_resolution_clock::now();
-                input_remeshed = remesh_isotropic(remesh_cli, input_for_param);
-                auto t_r1 = std::chrono::high_resolution_clock::now();
-                double rms = std::chrono::duration<double, std::milli>(t_r1 - t_r0).count();
-                std::cout << "[broker] Remeshed in " << rms << " ms" << std::endl;
-            } catch (const std::exception& e) {
-                std::cout << "[broker] Remesh failed: " << e.what() << std::endl;
-                has_remesh = false;
+            // Look for meshparam_bench in same directory as server
+            char self_path[4096] = {};
+#ifdef _WIN32
+            GetModuleFileNameA(nullptr, self_path, sizeof(self_path));
+#endif
+            std::string self_dir = std::string(self_path);
+            auto pos = self_dir.find_last_of("\\/");
+            if (pos != std::string::npos) self_dir = self_dir.substr(0, pos + 1);
+            else self_dir = "";
+            bench_exe = self_dir + "meshparam_bench.exe";
+            if (!std::ifstream(bench_exe).good()) {
+                bench_exe = "meshparam_bench.exe"; // fallback to PATH
             }
         }
 
-        // Determine which methods to run
-        struct MethodDef { std::string name; bool on_remeshed; };
-        std::vector<MethodDef> methods_to_run;
+        // Write input GLB to temp file
+        auto tid = std::this_thread::get_id();
+        std::ostringstream ss;
+        const char* tmp_dir = std::getenv("TEMP");
+        if (!tmp_dir) tmp_dir = std::getenv("TMP");
+        if (!tmp_dir) tmp_dir = ".";
+        ss << tmp_dir << "/meshparam_broker_" << tid;
+        std::string tmp_base = ss.str();
+        std::string tmp_input = tmp_base + "_input.glb";
+        { std::ofstream f(tmp_input, std::ios::binary);
+          f.write(reinterpret_cast<const char*>(input.data()), input.size()); }
 
+        // Determine methods to run
+        std::vector<std::string> methods;
         if (forced_method == "auto") {
-            // Path A: original healed+welded mesh
-            methods_to_run.push_back({"heat", false});
-            methods_to_run.push_back({"lscm", false});
-            methods_to_run.push_back({"igl_arap", false});
-            methods_to_run.push_back({"slim", false});
-            // stein_admm disabled from auto — crashes server on ~50% of meshes
-            // Available via method=stein_admm for manual use
-            methods_to_run.push_back({"cgal_conformal", false});
-            methods_to_run.push_back({"cgal_arap", false});
-            methods_to_run.push_back({"cgal_authalic", false});
-            // Path B: remeshed (if available)
-            if (has_remesh) {
-                methods_to_run.push_back({"heat", true});
-                methods_to_run.push_back({"lscm", true});
-                methods_to_run.push_back({"igl_arap", true});
-                methods_to_run.push_back({"slim", true});
-                methods_to_run.push_back({"cgal_conformal", true});
-                methods_to_run.push_back({"cgal_arap", true});
-                methods_to_run.push_back({"cgal_authalic", true});
-            }
+            methods = {"heat", "lscm", "igl_arap", "slim",
+                       "cgal_conformal", "cgal_arap", "cgal_authalic"
+#ifdef HAS_COMPMAJOR
+                       , "cm"
+#endif
+                       };
         } else {
-            methods_to_run.push_back({forced_method, false});
+            methods = {forced_method};
         }
 
-        // Run all methods in parallel, with SEH to catch access violations
-        std::vector<MethodResult> results(methods_to_run.size());
-        std::vector<std::thread> workers;
+        // Launch all methods as subprocesses in parallel
+        struct SubProc {
+            std::string method;
+            std::string json_path;
+            std::string glb_path;
+#ifdef _WIN32
+            HANDLE hProcess = nullptr;
+            HANDLE hThread = nullptr;
+#else
+            pid_t pid = 0;
+#endif
+        };
 
-        for (size_t i = 0; i < methods_to_run.size(); ++i) {
-            workers.emplace_back([&, i]() {
-                const auto& mdef = methods_to_run[i];
-                const auto& mesh_input = mdef.on_remeshed ? input_remeshed : input_for_param;
-                std::string suffix = mdef.on_remeshed ? "_remeshed" : "";
+        std::vector<SubProc> procs(methods.size());
+        for (size_t i = 0; i < methods.size(); i++) {
+            procs[i].method = methods[i];
+            procs[i].json_path = tmp_base + "_" + methods[i] + ".json";
+            procs[i].glb_path = tmp_base + "_" + methods[i] + ".glb";
 
-                if (mdef.name == "heat") {
-                    results[i] = run_heat(mesh_input, view_weighted);
-                    results[i].method += suffix;
-                } else if (mdef.name == "lscm") {
-                    results[i] = run_lscm(mesh_input);
-                    results[i].method += suffix;
-                } else if (mdef.name == "igl_arap") {
-                    results[i] = run_igl_arap(mesh_input);
-                    results[i].method += suffix;
-                } else if (mdef.name == "stein_admm") {
-                    results[i] = run_stein(mesh_input);
-                    results[i].method += suffix;
-                } else if (mdef.name == "slim") {
-                    results[i] = run_slim(mesh_input);
-                    results[i].method += suffix;
-                } else if (mdef.name == "cgal_conformal") {
-                    results[i] = run_cgal(mesh_input, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal" + suffix, view_weighted, mdef.on_remeshed ? std::vector<uint8_t>{} : input_original);
-                } else if (mdef.name == "cgal_arap") {
-                    results[i] = run_cgal(mesh_input, cgalparam::ParamMethod::ARAP, "cgal_arap" + suffix, view_weighted, mdef.on_remeshed ? std::vector<uint8_t>{} : input_original);
-                } else if (mdef.name == "cgal_authalic") {
-                    results[i] = run_cgal(mesh_input, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic" + suffix, view_weighted, mdef.on_remeshed ? std::vector<uint8_t>{} : input_original);
-                } else if (mdef.name == "cgal_mvc") {
-                    results[i] = run_cgal(mesh_input, cgalparam::ParamMethod::MeanValue, "cgal_mvc" + suffix, view_weighted, mdef.on_remeshed ? std::vector<uint8_t>{} : input_original);
-                } else {
-                    results[i].method = mdef.name;
-                    results[i].error = "Unknown method";
+            std::string cmd = "\"" + bench_exe + "\" " + methods[i]
+                + " \"" + tmp_input + "\""
+                + " --json \"" + procs[i].json_path + "\""
+                + " --output-glb \"" + procs[i].glb_path + "\"";
+
+#ifdef _WIN32
+            STARTUPINFOA si = {}; si.cb = sizeof(si);
+            PROCESS_INFORMATION pi = {};
+            si.dwFlags = STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE;
+            if (CreateProcessA(nullptr, const_cast<char*>(cmd.c_str()), nullptr, nullptr, FALSE,
+                              CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                procs[i].hProcess = pi.hProcess;
+                procs[i].hThread = pi.hThread;
+            } else {
+                std::cerr << "[broker] Failed to spawn " << methods[i] << std::endl;
+            }
+#else
+            // POSIX: fork+exec (simplified)
+            std::string full_cmd = cmd + " &";
+            std::system(full_cmd.c_str());
+#endif
+        }
+
+        // Wait for all with timeout
+        auto broker_start = std::chrono::steady_clock::now();
+#ifdef _WIN32
+        std::vector<HANDLE> handles;
+        for (auto& p : procs) {
+            if (p.hProcess) handles.push_back(p.hProcess);
+        }
+        if (!handles.empty()) {
+            DWORD wait_ms = static_cast<DWORD>(timeout_sec * 1000);
+            WaitForMultipleObjects(static_cast<DWORD>(handles.size()), handles.data(), TRUE, wait_ms);
+        }
+        // Kill any still running
+        for (auto& p : procs) {
+            if (p.hProcess) {
+                DWORD exit_code = 0;
+                GetExitCodeProcess(p.hProcess, &exit_code);
+                if (exit_code == STILL_ACTIVE) {
+                    std::cerr << "[broker] Killing timed-out process: " << p.method << std::endl;
+                    TerminateProcess(p.hProcess, 1);
+                    WaitForSingleObject(p.hProcess, 5000);
                 }
-            });
+                CloseHandle(p.hProcess);
+                CloseHandle(p.hThread);
+            }
         }
-        for (auto& w : workers) w.join();
+#else
+        // POSIX: wait with timeout (simplified — use alarm/signal)
+        sleep(timeout_sec);
+#endif
+
+        // Collect results
+        std::vector<MethodResult> results;
+        for (auto& p : procs) {
+            MethodResult r;
+            r.method = p.method;
+            // Read JSON result
+            std::ifstream jf(p.json_path);
+            if (jf.good()) {
+                std::string json_str((std::istreambuf_iterator<char>(jf)), std::istreambuf_iterator<char>());
+                jf.close();
+                // Parse JSON manually (lightweight — no JSON library dependency)
+                auto find_val = [&](const std::string& key) -> std::string {
+                    auto pos = json_str.find("\"" + key + "\":");
+                    if (pos == std::string::npos) return "";
+                    pos += key.size() + 3;
+                    if (json_str[pos] == '"') {
+                        auto end = json_str.find('"', pos + 1);
+                        return json_str.substr(pos + 1, end - pos - 1);
+                    }
+                    auto end = json_str.find_first_of(",}", pos);
+                    return json_str.substr(pos, end - pos);
+                };
+                r.success = find_val("success") == "true";
+                if (r.success) {
+                    r.elapsed_ms = std::stod(find_val("elapsed_ms"));
+                    r.vertices = std::stoi(find_val("vertices"));
+                    r.faces = std::stoi(find_val("faces"));
+                    r.angle_mean = std::stod(find_val("angle_mean"));
+                    r.angle_max = std::stod(find_val("angle_max"));
+                    r.area_mean = std::stod(find_val("area_mean"));
+                    r.area_std = std::stod(find_val("area_std"));
+                    r.stretch_mean = std::stod(find_val("stretch_mean"));
+                    r.stretch_max = std::stod(find_val("stretch_max"));
+                    r.flipped_tris = std::stoi(find_val("flipped_tris"));
+                    r.sym_dirichlet = std::stod(find_val("sym_dirichlet"));
+                    r.l2_area = std::stod(find_val("l2_area"));
+                    r.linf_area = std::stod(find_val("linf_area"));
+                    // Load result GLB
+                    std::ifstream gf(p.glb_path, std::ios::binary | std::ios::ate);
+                    if (gf.good()) {
+                        size_t sz = gf.tellg(); gf.seekg(0);
+                        r.glb.resize(sz);
+                        gf.read(reinterpret_cast<char*>(r.glb.data()), sz);
+                    }
+                } else {
+                    r.error = find_val("error");
+                    if (r.error.empty()) r.error = "process failed";
+                }
+            } else {
+                r.error = "no output (crash or timeout)";
+            }
+            results.push_back(std::move(r));
+            // Cleanup temp files
+            std::remove(p.json_path.c_str());
+            std::remove(p.glb_path.c_str());
+        }
+        std::remove(tmp_input.c_str());
+
+        auto broker_end = std::chrono::steady_clock::now();
+        double broker_ms = std::chrono::duration<double, std::milli>(broker_end - broker_start).count();
 
         // Pick best by score
         int best_idx = -1;
@@ -1360,14 +1441,12 @@ int main(int argc, char* argv[]) {
             std::cout << "  [broker] " << results[i].method
                       << ": " << (results[i].success ? "OK" : "FAIL")
                       << " score=" << s
-                      << " angle=" << results[i].angle_mean
-                      << " stretch=" << results[i].stretch_mean
                       << " (" << results[i].elapsed_ms << " ms)" << std::endl;
             if (s < best_score) { best_score = s; best_idx = static_cast<int>(i); }
         }
+        std::cout << "  [broker] Total: " << broker_ms << " ms" << std::endl;
 
         if (best_idx < 0 || !results[best_idx].success) {
-            // All methods failed
             std::ostringstream err;
             err << "{\"error\":\"All methods failed\",\"methods\":[";
             for (size_t i = 0; i < results.size(); ++i) {
@@ -1384,15 +1463,12 @@ int main(int argc, char* argv[]) {
         std::cout << "  [broker] Winner: " << best.method
                   << " (score=" << best.score() << ")" << std::endl;
 
-        // Re-apply original normals from the input mesh to the parameterized output.
-        // The parameterization ran on welded vertices; now map UVs back to the
-        // original split-vertex mesh so normals from OCC surfaces are preserved.
+        // Re-apply original normals: map UVs from welded result back to split-vertex input
         {
-            auto orig = meshparam::load_gltf_from_memory(input); // original with normals
-            auto param = meshparam::load_gltf_from_memory(best.glb); // welded with UVs
+            auto orig = meshparam::load_gltf_from_memory(input_original);
+            auto param = meshparam::load_gltf_from_memory(best.glb);
 
             if (orig.has_normals() && param.has_uvs() && orig.num_vertices() != param.num_vertices()) {
-                // Build position → UV map from welded parameterized mesh
                 struct Vec3Hash {
                     size_t operator()(const std::array<int64_t,3>& v) const {
                         size_t h = 0;
@@ -1409,8 +1485,6 @@ int main(int argc, char* argv[]) {
                     };
                     pos_to_welded[key] = i;
                 }
-
-                // Map UVs + seam from welded → original split vertices
                 orig.UV.resize(orig.num_vertices(), 2);
                 if (param.has_seam()) orig.seam.resize(orig.num_vertices());
                 int mapped = 0;
@@ -1427,9 +1501,6 @@ int main(int argc, char* argv[]) {
                         mapped++;
                     }
                 }
-                // face_ids already on orig from the OCC/ACIS tessellator
-                std::cout << "  [broker] Mapped UVs to " << mapped << "/" << orig.num_vertices()
-                          << " split vertices (normals + face_ids + seam preserved)" << std::endl;
                 best.glb = meshparam::save_gltf_to_memory(orig);
                 best.vertices = orig.num_vertices();
                 best.faces = orig.num_faces();
@@ -1445,21 +1516,7 @@ int main(int argc, char* argv[]) {
         }
         all << "]";
 
-        // Draco compress the best result (which has seam + face_ids after UV remap)
-#ifdef HAS_DRACO
-        if (!best.glb.empty()) {
-            best.glb = draco_compress_glb(best.glb);
-            results[best_idx].glb = best.glb;
-        }
-        // Also compress other successful results for session access
-        for (size_t i = 0; i < results.size(); ++i) {
-            if ((int)i != best_idx && results[i].success && !results[i].glb.empty()) {
-                results[i].glb = draco_compress_glb(results[i].glb);
-            }
-        }
-#endif
-
-        // Store all results in a session for client picking
+        // Store session for client method switching
         cleanup_sessions();
         std::string session_id = generate_session_id();
         {
@@ -1470,7 +1527,6 @@ int main(int argc, char* argv[]) {
         res.set_header("X-Method", best.method);
         res.set_header("X-Metrics", best.to_json());
         res.set_header("X-All-Methods", all.str());
-        res.set_header("X-Heal-Info", heal_total.to_json());
         res.set_header("X-Session", session_id);
         res.set_content(std::string(best.glb.begin(), best.glb.end()), "model/gltf-binary");
     });
@@ -1521,6 +1577,70 @@ int main(int argc, char* argv[]) {
         if (!r.success) { res.status = 500; res.set_content("{\"error\":\"" + r.error + "\"}", "application/json"); return; }
         res.set_header("X-Metrics", r.to_json());
         res.set_content(std::string(r.glb.begin(), r.glb.end()), "model/gltf-binary");
+    });
+
+    // --- OBJ → GLB conversion via bench CLI ---
+    svr.Post("/api/convert/obj", [&](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const char* tmp_dir = std::getenv("TEMP");
+            if (!tmp_dir) tmp_dir = std::getenv("TMP");
+            if (!tmp_dir) tmp_dir = ".";
+            auto tid = std::this_thread::get_id();
+            std::ostringstream ss; ss << tmp_dir << "/meshparam_obj_" << tid;
+            std::string tmp_obj = ss.str() + ".obj";
+            std::string tmp_glb = ss.str() + ".glb";
+
+            { std::ofstream f(tmp_obj, std::ios::binary); f.write(req.body.data(), req.body.size()); }
+
+            // Use bench CLI in "convert" mode
+            char self_path[4096] = {};
+#ifdef _WIN32
+            GetModuleFileNameA(nullptr, self_path, sizeof(self_path));
+#endif
+            std::string self_dir = std::string(self_path);
+            auto pos = self_dir.find_last_of("\\/");
+            if (pos != std::string::npos) self_dir = self_dir.substr(0, pos + 1);
+            std::string bench_exe = self_dir + "meshparam_bench.exe";
+
+            // Use CreateProcess instead of system() to avoid quote issues on Windows
+#ifdef _WIN32
+            std::string cmd = "\"" + bench_exe + "\" convert \"" + tmp_obj + "\" --output-glb \"" + tmp_glb + "\"";
+            STARTUPINFOA si = {}; si.cb = sizeof(si);
+            si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
+            PROCESS_INFORMATION pi = {};
+            int ret = -1;
+            if (CreateProcessA(bench_exe.c_str(), const_cast<char*>(cmd.c_str()),
+                              nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                WaitForSingleObject(pi.hProcess, 30000);
+                DWORD exit_code = 1;
+                GetExitCodeProcess(pi.hProcess, &exit_code);
+                ret = (exit_code == 0) ? 0 : 1;
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+            }
+#else
+            std::string cmd = bench_exe + " convert " + tmp_obj + " --output-glb " + tmp_glb;
+            int ret = std::system(cmd.c_str());
+#endif
+            std::remove(tmp_obj.c_str());
+
+            if (ret != 0) {
+                std::remove(tmp_glb.c_str());
+                throw std::runtime_error("OBJ conversion failed");
+            }
+
+            std::ifstream f(tmp_glb, std::ios::binary | std::ios::ate);
+            size_t sz = f.tellg(); f.seekg(0);
+            std::vector<uint8_t> data(sz);
+            f.read(reinterpret_cast<char*>(data.data()), sz);
+            f.close();
+            std::remove(tmp_glb.c_str());
+
+            res.set_content(std::string(data.begin(), data.end()), "model/gltf-binary");
+        } catch (const std::exception& e) {
+            res.status = 500;
+            res.set_content("{\"error\":\"" + std::string(e.what()) + "\"}", "application/json");
+        }
     });
 
     // --- STEP tessellation (Gmsh default, OCC fallback) ---
