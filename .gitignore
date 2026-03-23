@@ -9,3 +9,13 @@ build_wasm/
 CMakeUserPresets.json
 scripts/__pycache__/
 Spatial/
+extern/CompMajor/Matlab/
+extern/CompMajor/.git*
+extern/CompMajor/CMakeLists.txt
+extern/CompMajor/README.md
+extern/flip-free-parametrization/
+extern/gmsh/
+cmake_options.texi
+debug_eigen.obj
+data/*_gmsh*.glb
+web/tests/

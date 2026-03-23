@@ -1,8 +1,0 @@
-Method,Success,Total,AvgSymDirichlet,AvgFlips,Wins,AvgTimeMs
-cgal_arap,9,11,1339.8,0.0,5,19
-lscm,11,11,1151.2,2.7,2,13
-igl_arap,11,11,2031.7,54.5,2,19
-slim,11,11,901.6,2.7,2,50
-heat,11,11,485719.8,134.5,0,21
-cgal_conformal,11,11,56385714.4,155.5,0,1
-cgal_authalic,11,11,19584003.6,120.3,0,2
