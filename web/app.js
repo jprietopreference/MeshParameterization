@@ -673,18 +673,25 @@ function showColorCodedEdges(mesh) {
     const edgeTypeData = mesh.getVerticesData('_EDGE_TYPE');
     if (!positions || !indices || !edgeTypeData) return;
 
-    // Draw edges where both endpoints have the same non-zero _EDGE_TYPE
+    // _EDGE_TYPE encodes: type*10000 + occ_edge_id (0 = interior)
+    // Draw edges where both vertices share the SAME OCC edge ID
     const redPts = [], orangePts = [], yellowPts = [];
-    const seen = new Set(); // deduplicate edges
+    const seen = new Set();
 
     for (let t = 0; t < indices.length; t += 3) {
         for (let e = 0; e < 3; e++) {
             const a = indices[t + e], b = indices[t + (e + 1) % 3];
-            const eta = edgeTypeData[a], etb = edgeTypeData[b];
-            if (eta < 0.5 || etb < 0.5) continue; // at least one vertex is interior
-            // Use the highest-priority type (lowest number: 1 > 2 > 3)
-            const etype = Math.min(Math.round(eta), Math.round(etb));
-            // Deduplicate by sorted vertex pair
+            const va = edgeTypeData[a], vb = edgeTypeData[b];
+            if (va < 0.5 || vb < 0.5) continue; // interior vertex
+
+            const eid_a = Math.round(va) % 10000;
+            const eid_b = Math.round(vb) % 10000;
+            if (eid_a !== eid_b) continue; // different OCC edges — not a B-Rep edge
+
+            const type_a = Math.floor(Math.round(va) / 10000);
+            const type_b = Math.floor(Math.round(vb) / 10000);
+            const etype = Math.min(type_a, type_b);
+
             const key = a < b ? `${a}_${b}` : `${b}_${a}`;
             if (seen.has(key)) continue;
             seen.add(key);

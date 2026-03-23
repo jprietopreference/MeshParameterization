@@ -350,13 +350,16 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
         top_face_tags = set()
         bot_face_tags = set()
 
-    # Classify ALL B-Rep edge nodes by type from OCC topology:
-    # 1 = seam (red), 2 = Z-perp non-seam (orange), 3 = other B-Rep (yellow), 0 = interior
-    node_edge_type = {}  # node_tag -> edge_type (highest priority wins)
+    # Classify ALL B-Rep edge nodes from OCC topology.
+    # Store per-node: edge_type (1=seam, 2=z-perp, 3=other) and edge_id (OCC edge tag).
+    # A node at a junction may belong to multiple edges — store all edge IDs.
+    # _EDGE_TYPE: highest priority type (1>2>3), 0=interior
+    # _EDGE_ID: OCC edge tag (for drawing: connect vertices with same edge_id)
+    node_edge_type = {}  # node_tag -> edge_type
+    node_edge_ids = {}   # node_tag -> set of edge tags
     seam_node_tags = set()
 
     all_brep_edges_for_classify = gmsh.model.occ.getEntities(dim=1)
-    # Determine which edges are Z-perpendicular
     z_perp_edge_set = set()
     for _, tag_e in all_brep_edges_for_classify:
         pts = gmsh.model.getBoundary([(1, tag_e)], oriented=False)
@@ -366,29 +369,46 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
             if abs(p1[2] - p2[2]) * scale <= z_tol_seam:
                 z_perp_edge_set.add(tag_e)
 
+    # Encode edge_type in upper bits and edge_id in lower bits of a float.
+    # Use: _EDGE_TYPE = type (1/2/3/0), _EDGE_ID = OCC edge tag
+    edge_type_map = {}  # occ_edge_tag -> type (1/2/3)
     for _, tag_e in all_brep_edges_for_classify:
         if tag_e in seam_edge_tags:
-            etype = 1  # seam (red)
+            etype = 1
         elif tag_e in z_perp_edge_set:
-            etype = 2  # Z-perp (orange)
+            etype = 2
         else:
-            etype = 3  # other B-Rep (yellow)
+            etype = 3
+        edge_type_map[tag_e] = etype
         try:
             ntags, _, _ = gmsh.model.mesh.getNodes(1, tag_e, includeBoundary=True)
             for nt in ntags:
                 nt_int = int(nt)
-                # Higher priority type wins (1 > 2 > 3)
                 if nt_int not in node_edge_type or etype < node_edge_type[nt_int]:
                     node_edge_type[nt_int] = etype
+                if nt_int not in node_edge_ids:
+                    node_edge_ids[nt_int] = set()
+                node_edge_ids[nt_int].add(tag_e)
                 if etype == 1:
                     seam_node_tags.add(nt_int)
+        except:
+            pass
+
+    # Build ordered node lists per OCC edge for the GLB
+    # This allows the frontend to draw each B-Rep edge as a polyline
+    edge_node_lists = {}  # occ_edge_tag -> [node_tags in order]
+    for _, tag_e in all_brep_edges_for_classify:
+        try:
+            ntags, coords, _ = gmsh.model.mesh.getNodes(1, tag_e, includeBoundary=True)
+            edge_node_lists[tag_e] = [int(nt) for nt in ntags]
         except:
             pass
 
     n_seam = sum(1 for v in node_edge_type.values() if v == 1)
     n_zperp = sum(1 for v in node_edge_type.values() if v == 2)
     n_other = sum(1 for v in node_edge_type.values() if v == 3)
-    print(f"[pipeline] B-Rep edge nodes: {n_seam} seam, {n_zperp} Z-perp, {n_other} other")
+    print(f"[pipeline] B-Rep edge nodes: {n_seam} seam, {n_zperp} Z-perp, {n_other} other, "
+          f"{len(edge_node_lists)} OCC edges")
 
     # 6. Extract mesh per face group (top/bottom if seam found, else all together)
     surfaces = gmsh.model.getEntities(dim=2)
@@ -427,6 +447,13 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
                 face_ids.append(float(face_idx))
                 seam_flags.append(1.0 if int(nt) in seam_node_tags else 0.0)
                 edge_types.append(float(node_edge_type.get(int(nt), 0)))
+                # For _EDGE_ID: encode as type*10000 + edge_tag for the highest-priority edge
+                nt_int = int(nt)
+                if nt_int in node_edge_ids:
+                    # Pick the edge with highest priority type
+                    best_eid = min(node_edge_ids[nt_int], key=lambda e: edge_type_map.get(e, 9))
+                    edge_types[-1] = float(edge_type_map.get(best_eid, 0) * 10000 + best_eid)
+                # edge_types now encodes: type*10000 + edge_id (0 = interior)
             for i in range(0, len(tri_node_tags), 3):
                 n0, n1, n2 = int(tri_node_tags[i]), int(tri_node_tags[i+1]), int(tri_node_tags[i+2])
                 if n0 in tag_to_local and n1 in tag_to_local and n2 in tag_to_local:
