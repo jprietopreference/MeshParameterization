@@ -252,37 +252,96 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
             best_edges = candidates[0][1]
             best_perim = candidates[0][2]
 
-        # Try candidates in order (longest first, min Z on tie) until we find
-        # one that produces a balanced split (each half >= 20% of faces)
+        # Topological split: flood-fill face adjacency, seam edges are barriers.
+        # 1. Build face adjacency graph: face -> [neighbor faces] via shared edges
+        # 2. Don't cross seam edges
+        # 3. Find the face with strongest Z+ normal as seed for "front" side
+        # 4. Flood from seed -> "front". Everything else -> "back"
+
         all_faces = gmsh.model.occ.getEntities(dim=2)
-        total_faces = len(all_faces)
-        min_frac = 0.15  # each half must have at least 15% of faces
+        all_face_tags = set(t for _, t in all_faces)
+        total_faces = len(all_face_tags)
+        min_frac = 0.15
+
+        # Build edge -> faces adjacency
+        edge_to_faces = ddict(set)
+        face_to_edges = ddict(set)
+        for dim_f, tag_f in all_faces:
+            bnd = gmsh.model.getBoundary([(dim_f, tag_f)], oriented=False, recursive=False)
+            for b in bnd:
+                et = abs(b[1])
+                edge_to_faces[et].add(tag_f)
+                face_to_edges[tag_f].add(et)
 
         for cand_z, cand_edges, cand_perim in candidates:
-            cand_seam_z = cand_z / scale if scale else cand_z
-            top_tags = set()
-            bot_tags = set()
+            cand_seam_set = set(cand_edges)
+
+            # Build face adjacency (don't cross seam)
+            face_adj = ddict(set)
+            for et, face_set in edge_to_faces.items():
+                if et in cand_seam_set:
+                    continue  # seam edge — barrier
+                face_list = list(face_set)
+                for i in range(len(face_list)):
+                    for j in range(i + 1, len(face_list)):
+                        face_adj[face_list[i]].add(face_list[j])
+                        face_adj[face_list[j]].add(face_list[i])
+
+            # Find seed: face with strongest Z+ normal (most front-facing)
+            best_seed = -1
+            best_nz = -2
             for dim_f, tag_f in all_faces:
                 bb = gmsh.model.getBoundingBox(dim_f, tag_f)
-                face_center_z = (bb[2] + bb[5]) / 2.0
-                if face_center_z >= cand_seam_z:
-                    top_tags.add(tag_f)
-                else:
-                    bot_tags.add(tag_f)
-            frac_top = len(top_tags) / total_faces
-            frac_bot = len(bot_tags) / total_faces
-            if frac_top >= min_frac and frac_bot >= min_frac:
+                # Use face center to query normal
+                cu = 0.5  # parametric center (approximate)
+                cv = 0.5
+                try:
+                    # Get a point on the face for normal estimation
+                    mass_center = gmsh.model.occ.getCenterOfMass(dim_f, tag_f)
+                    # Estimate normal from bounding box orientation
+                    # Better: check if face has nodes and use their normals
+                    node_tags, coords, param_coords = gmsh.model.mesh.getNodes(dim_f, tag_f, includeBoundary=False)
+                    if len(node_tags) > 0:
+                        # Use first interior node's normal
+                        u, v = param_coords[0], param_coords[1]
+                        nx, ny, nz = gmsh.model.getNormal(tag_f, [u, v])
+                        if nz > best_nz:
+                            best_nz = nz
+                            best_seed = tag_f
+                except:
+                    pass
+
+            if best_seed < 0:
+                continue  # can't find seed
+
+            # Flood fill from seed
+            front_faces = set()
+            stack = [best_seed]
+            while stack:
+                f = stack.pop()
+                if f in front_faces:
+                    continue
+                front_faces.add(f)
+                for nb in face_adj.get(f, set()):
+                    if nb not in front_faces:
+                        stack.append(nb)
+
+            back_faces = all_face_tags - front_faces
+            frac_front = len(front_faces) / total_faces
+            frac_back = len(back_faces) / total_faces
+
+            if frac_front >= min_frac and frac_back >= min_frac:
                 best_edges = cand_edges
                 best_perim = cand_perim
                 best_z = cand_z
-                seam_edge_tags = set(best_edges)
-                seam_z = cand_seam_z
-                top_face_tags = top_tags
-                bot_face_tags = bot_tags
+                seam_edge_tags = cand_seam_set
+                top_face_tags = front_faces
+                bot_face_tags = back_faces
                 print(f"[pipeline] Auto-seam: {len(best_edges)} edges, "
                       f"{best_perim:.1f}mm perimeter, z={best_z:.2f}mm")
-                print(f"[pipeline] Split: {len(top_face_tags)} top faces ({frac_top:.0%}), "
-                      f"{len(bot_face_tags)} bottom faces ({frac_bot:.0%})")
+                print(f"[pipeline] Split: {len(top_face_tags)} front faces ({frac_front:.0%}), "
+                      f"{len(bot_face_tags)} back faces ({frac_back:.0%})")
+                print(f"[pipeline] Seed face {best_seed} (normal Z={best_nz:.2f})")
                 break
         else:
             print(f"[pipeline] No balanced seam found among {len(candidates)} candidates")
