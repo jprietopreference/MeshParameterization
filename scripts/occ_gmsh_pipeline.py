@@ -95,18 +95,19 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
 
     # Compute N from chord deviation.
     # For radius R, curvature sizing gives element size = 2πR/N.
-    # Chord deviation = π²R/(2N²).
-    # N = π*sqrt(R_ref/(2*d)), using R_ref as typical feature radius.
-    r_ref = 10.0  # mm — typical curvature radius
-    curvature_elements = max(4, math.ceil(math.pi * math.sqrt(r_ref / (2.0 * chord_deviation))))
+    # Chord deviation d = π²R/(2N²). For d ≤ target at the largest radius
+    # where curvature matters (R_max ≈ max_edge²/(8*d)):
+    # N = π*sqrt(R_max/(2*d)) = π*max_edge/(4*d) * sqrt(1/2) ≈ max_edge*0.56/d
+    # But cap at a reasonable value to avoid over-refinement.
+    r_max = max_edge**2 / (8.0 * chord_deviation)  # transition radius
+    curvature_elements = max(4, min(20, math.ceil(math.pi * math.sqrt(r_max / (2.0 * chord_deviation)))))
 
-    # min_edge: balance between capturing small features and avoiding over-refinement.
-    # s = sqrt(8*R_min*d) gives chord deviation d on radius R_min.
-    # Use R_min = 2*chord_deviation — features smaller than 2x chord deviation
-    # are below our precision target anyway.
+    # min_edge: the smallest element must achieve chord_deviation on the smallest
+    # radius we care about. s = sqrt(8*R_min*d).
+    # R_min = chord_deviation gives s = sqrt(8*d*d) = 2*sqrt(2)*d ≈ 2.83*d
+    # This ensures even 1mm-radius fillets stay within chord deviation.
     if min_edge is None:
-        r_min = max(1.0, 2.0 * chord_deviation)
-        min_edge = math.sqrt(8.0 * r_min * chord_deviation)
+        min_edge = 2.0 * chord_deviation  # conservative: ~0.5mm chord dev on R=1mm
 
     print(f"[pipeline] Chord deviation target: {chord_deviation:.2f} mm")
     print(f"[pipeline] Derived: N={curvature_elements} elements/2pi, "
