@@ -345,10 +345,13 @@ int main(int argc, char* argv[]) {
                     if (top_param.has_uvs()) {
                         combined.UV.resize(tnv + bnv, 2);
                         combined.UV.topRows(tnv) = top_param.UV;
-                        if (bot_param.has_uvs())
+                        if (bot_param.has_uvs()) {
+                            // Offset bottom UVs: U += 2.0 to signal "back face" to shader
                             combined.UV.bottomRows(bnv) = bot_param.UV;
-                        else
-                            combined.UV.bottomRows(bnv).setZero();
+                            combined.UV.bottomRows(bnv).col(0).array() += 2.0;
+                        } else {
+                            combined.UV.bottomRows(bnv).setConstant(2.0); // back face marker
+                        }
                     }
                     if (top_param.has_normals() || bot_param.has_normals()) {
                         combined.N.resize(tnv + bnv, 3);

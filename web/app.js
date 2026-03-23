@@ -176,13 +176,47 @@ function showMeshQuality(mesh) {
 }
 
 function applyCheckerboard(mesh) {
-    const mat = new BABYLON.StandardMaterial('checker', scene);
-    const tex = new BABYLON.Texture('textures/checker.png', scene, false, true, BABYLON.Texture.NEAREST_SAMPLINGMODE);
-    tex.wrapU = BABYLON.Texture.MIRROR_ADDRESSMODE;
-    tex.wrapV = BABYLON.Texture.MIRROR_ADDRESSMODE;
-    tex.uScale = 2.0; tex.vScale = 2.0;
-    mat.diffuseTexture = tex;
-    mat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+    // Shader checkerboard: white/black for front (top), white/grey for back (bottom)
+    // Back face is signaled by U >= 1.5 (offset by 2.0 in the combined GLB)
+    BABYLON.Effect.ShadersStore['checkerVertexShader'] = `
+        precision highp float;
+        attribute vec3 position;
+        attribute vec3 normal;
+        attribute vec2 uv;
+        uniform mat4 worldViewProjection;
+        uniform mat4 world;
+        varying vec2 vUV;
+        varying vec3 vNormal;
+        void main() {
+            gl_Position = worldViewProjection * vec4(position, 1.0);
+            vUV = uv;
+            vNormal = normalize((world * vec4(normal, 0.0)).xyz);
+        }`;
+    BABYLON.Effect.ShadersStore['checkerFragmentShader'] = `
+        precision highp float;
+        varying vec2 vUV;
+        varying vec3 vNormal;
+        void main() {
+            float scale = 2.0;
+            bool isBack = vUV.x >= 1.5;
+            vec2 uv = isBack ? vec2(vUV.x - 2.0, vUV.y) : vUV;
+            // Checkerboard pattern
+            float cx = floor(uv.x * scale);
+            float cy = floor(uv.y * scale);
+            float checker = mod(cx + cy, 2.0);
+            // Front: white/black, Back: white/grey
+            vec3 light = vec3(1.0, 1.0, 1.0);
+            vec3 dark = isBack ? vec3(0.6, 0.6, 0.6) : vec3(0.0, 0.0, 0.0);
+            vec3 color = mix(dark, light, checker);
+            // Simple diffuse lighting
+            vec3 lightDir = normalize(vec3(0.3, 0.5, 1.0));
+            float diff = max(dot(vNormal, lightDir), 0.0) * 0.6 + 0.4;
+            gl_FragColor = vec4(color * diff, 1.0);
+        }`;
+    const mat = new BABYLON.ShaderMaterial('checkerShader', scene, 'checker', {
+        attributes: ['position', 'normal', 'uv'],
+        uniforms: ['worldViewProjection', 'world'],
+    });
     mat.backFaceCulling = false;
     mesh.material = mat;
 }
