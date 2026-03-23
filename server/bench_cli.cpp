@@ -210,9 +210,10 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        // Weld + heal
+        // Weld + heal + extract largest component (multi-body STEP files)
         auto welded = weld_vertices(glb);
         heal_mesh(welded, false);
+        welded = extract_largest_component(welded);
 
         // Dispatch method
         if (method == "heat") {

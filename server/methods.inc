@@ -197,6 +197,79 @@ std::vector<uint8_t> remesh_isotropic(const std::string& remesh_cli, const std::
     std::remove(tmp_out.c_str());
     return result;
 }
+// Extract the largest connected component from a mesh
+std::vector<uint8_t> extract_largest_component(const std::vector<uint8_t>& input_glb) {
+    auto mesh = meshparam::load_gltf_from_memory(input_glb);
+    int nv = mesh.num_vertices(), nf = mesh.num_faces();
+    if (nf == 0) return input_glb;
+
+    // BFS to find connected components via face adjacency
+    std::vector<std::vector<int>> vert_faces(nv);
+    for (int f = 0; f < nf; f++) {
+        for (int j = 0; j < 3; j++) vert_faces[mesh.F(f, j)].push_back(f);
+    }
+
+    std::vector<int> face_comp(nf, -1);
+    int num_comp = 0;
+    for (int f = 0; f < nf; f++) {
+        if (face_comp[f] >= 0) continue;
+        int comp = num_comp++;
+        std::vector<int> stack = {f};
+        while (!stack.empty()) {
+            int cf = stack.back(); stack.pop_back();
+            if (face_comp[cf] >= 0) continue;
+            face_comp[cf] = comp;
+            for (int j = 0; j < 3; j++) {
+                int v = mesh.F(cf, j);
+                for (int nf2 : vert_faces[v]) {
+                    if (face_comp[nf2] < 0) stack.push_back(nf2);
+                }
+            }
+        }
+    }
+
+    if (num_comp <= 1) return input_glb; // single component
+
+    // Find largest component
+    std::vector<int> comp_size(num_comp, 0);
+    for (int f = 0; f < nf; f++) comp_size[face_comp[f]]++;
+    int largest = std::max_element(comp_size.begin(), comp_size.end()) - comp_size.begin();
+
+    std::cerr << "[component] " << num_comp << " components, extracting largest ("
+              << comp_size[largest] << "/" << nf << " faces)" << std::endl;
+
+    // Extract faces and remap vertices
+    std::vector<bool> used(nv, false);
+    std::vector<Eigen::Vector3i> new_faces;
+    for (int f = 0; f < nf; f++) {
+        if (face_comp[f] != largest) continue;
+        new_faces.push_back(mesh.F.row(f));
+        for (int j = 0; j < 3; j++) used[mesh.F(f, j)] = true;
+    }
+    std::vector<int> remap(nv, -1);
+    int new_nv = 0;
+    for (int i = 0; i < nv; i++) {
+        if (used[i]) remap[i] = new_nv++;
+    }
+
+    meshparam::TriMesh out;
+    out.V.resize(new_nv, 3);
+    if (mesh.has_normals()) out.N.resize(new_nv, 3);
+    if (mesh.has_face_ids()) out.face_ids.resize(new_nv);
+    for (int i = 0; i < nv; i++) {
+        if (remap[i] < 0) continue;
+        out.V.row(remap[i]) = mesh.V.row(i);
+        if (mesh.has_normals()) out.N.row(remap[i]) = mesh.N.row(i);
+        if (mesh.has_face_ids()) out.face_ids(remap[i]) = mesh.face_ids(i);
+    }
+    out.F.resize(new_faces.size(), 3);
+    for (size_t f = 0; f < new_faces.size(); f++) {
+        for (int j = 0; j < 3; j++) out.F(f, j) = remap[new_faces[f](j)];
+    }
+
+    return meshparam::save_gltf_to_memory(out);
+}
+
 // Normalize UVs to [0,1] with uniform scaling (preserves aspect ratio)
 void normalize_uv_uniform(Eigen::MatrixXd& UV) {
     Eigen::Vector2d mn = UV.colwise().minCoeff();
@@ -795,6 +868,8 @@ MethodResult run_cm(const std::vector<uint8_t>& input_glb, int iterations = 100)
     auto t0 = std::chrono::high_resolution_clock::now();
     try {
         auto glb_with_bnd = cut_closed_mesh(input_glb);
+        // Heal after cut — seam cutting can create degenerate triangles
+        heal_mesh(glb_with_bnd, true);
         auto mesh = meshparam::load_gltf_from_memory(glb_with_bnd);
         int nv = mesh.num_vertices(), nf = mesh.num_faces();
 
