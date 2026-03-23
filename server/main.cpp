@@ -1249,6 +1249,7 @@ int main(int argc, char* argv[]) {
     svr.Post("/api/parameterize", [&](const httplib::Request& req, httplib::Response& res) {
         std::string forced_method = req.has_param("method") ? req.get_param_value("method") : "auto";
         int timeout_sec = req.has_param("timeout") ? std::stoi(req.get_param_value("timeout")) : 60;
+        bool auto_seam = req.has_param("autoSeam") && req.get_param_value("autoSeam") == "true";
 
         std::vector<uint8_t> input(req.body.begin(), req.body.end());
         std::vector<uint8_t> input_original = input;
@@ -1323,7 +1324,8 @@ int main(int argc, char* argv[]) {
             std::string cmd = "\"" + bench_exe + "\" " + methods[i]
                 + " \"" + tmp_input + "\""
                 + " --json \"" + procs[i].json_path + "\""
-                + " --output-glb \"" + procs[i].glb_path + "\"";
+                + " --output-glb \"" + procs[i].glb_path + "\""
+                + (auto_seam ? " --auto-seam" : "");
 
 #ifdef _WIN32
             STARTUPINFOA si = {}; si.cb = sizeof(si);
@@ -1560,9 +1562,8 @@ int main(int argc, char* argv[]) {
 
     // --- Individual method endpoints (still available) ---
     svr.Post("/api/parameterize/heat", [](const httplib::Request& req, httplib::Response& res) {
-        bool vw = req.has_param("viewWeighted") && req.get_param_value("viewWeighted") == "true";
         std::vector<uint8_t> input(req.body.begin(), req.body.end());
-        auto r = run_heat(input, vw);
+        auto r = run_heat(input, false);
         if (!r.success) { res.status = 500; res.set_content("{\"error\":\"" + r.error + "\"}", "application/json"); return; }
         res.set_header("X-Metrics", r.to_json());
         res.set_content(std::string(r.glb.begin(), r.glb.end()), "model/gltf-binary");

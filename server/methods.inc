@@ -270,6 +270,177 @@ std::vector<uint8_t> extract_largest_component(const std::vector<uint8_t>& input
     return meshparam::save_gltf_to_memory(out);
 }
 
+// ============================================================
+// Find the longest Z-perpendicular B-Rep edge loop for auto-seam
+// Returns vertex indices of the loop, or empty if none found.
+// ============================================================
+std::vector<int> find_longest_z_loop(const std::vector<uint8_t>& input_glb, double z_tol = 0.5) {
+    auto mesh = meshparam::load_gltf_from_memory(input_glb);
+    if (!mesh.has_face_ids()) return {};
+    int nv = mesh.num_vertices(), nf = mesh.num_faces();
+
+    // Build B-Rep boundary edges (adjacent tris with different face_id)
+    struct PosKey {
+        int64_t x, y, z;
+        bool operator<(const PosKey& o) const {
+            return std::tie(x,y,z) < std::tie(o.x,o.y,o.z);
+        }
+        bool operator==(const PosKey& o) const {
+            return x==o.x && y==o.y && z==o.z;
+        }
+    };
+    auto make_key = [&](int i) -> PosKey {
+        return {(int64_t)std::round(mesh.V(i,0)*1e4),
+                (int64_t)std::round(mesh.V(i,1)*1e4),
+                (int64_t)std::round(mesh.V(i,2)*1e4)};
+    };
+    struct PosKeyHash {
+        size_t operator()(const PosKey& k) const {
+            size_t h = 0;
+            h ^= std::hash<int64_t>()(k.x) + 0x9e3779b9 + (h<<6) + (h>>2);
+            h ^= std::hash<int64_t>()(k.y) + 0x9e3779b9 + (h<<6) + (h>>2);
+            h ^= std::hash<int64_t>()(k.z) + 0x9e3779b9 + (h<<6) + (h>>2);
+            return h;
+        }
+    };
+
+    // Edge key: sorted pair of position keys
+    struct EdgeKey {
+        PosKey a, b;
+        bool operator==(const EdgeKey& o) const { return a==o.a && b==o.b; }
+    };
+    struct EdgeKeyHash {
+        PosKeyHash h;
+        size_t operator()(const EdgeKey& e) const { return h(e.a) ^ (h(e.b) * 31); }
+    };
+    auto make_edge = [](PosKey a, PosKey b) -> EdgeKey {
+        return (a < b) ? EdgeKey{a, b} : EdgeKey{b, a};
+    };
+
+    struct EdgeInfo { double fid; int va, vb; };
+    std::unordered_map<EdgeKey, std::vector<EdgeInfo>, EdgeKeyHash> edge_map;
+    for (int f = 0; f < nf; f++) {
+        double fid = mesh.face_ids(mesh.F(f, 0));
+        for (int e = 0; e < 3; e++) {
+            int a = mesh.F(f, e), b = mesh.F(f, (e+1)%3);
+            auto ek = make_edge(make_key(a), make_key(b));
+            edge_map[ek].push_back({fid, a, b});
+        }
+    }
+
+    // Group boundary edges by face-pair (sorted pair of face IDs)
+    // Each face-pair boundary forms one or more edge chains
+    struct BndEdge { int a, b; };
+    std::map<std::pair<int,int>, std::vector<BndEdge>> face_pair_edges;
+    for (auto& [ek, entries] : edge_map) {
+        std::set<double> fids;
+        for (auto& e : entries) fids.insert(e.fid);
+        if (fids.size() <= 1) continue;
+        // Use sorted pair of the two most common face IDs
+        std::vector<int> fid_list(fids.begin(), fids.end());
+        for (size_t i = 0; i < fid_list.size(); i++) {
+            for (size_t j = i+1; j < fid_list.size(); j++) {
+                auto key = std::make_pair(std::min(fid_list[i], fid_list[j]),
+                                          std::max(fid_list[i], fid_list[j]));
+                face_pair_edges[key].push_back({entries[0].va, entries[0].vb});
+            }
+        }
+    }
+
+    // For each face-pair, trace loops from its edges
+    std::vector<std::vector<int>> loops;
+    for (auto& [fpair, edges] : face_pair_edges) {
+        // Build local adjacency
+        std::unordered_map<PosKey, std::vector<std::pair<PosKey, int>>, PosKeyHash> adj;
+        for (auto& e : edges) {
+            auto ka = make_key(e.a), kb = make_key(e.b);
+            adj[ka].push_back({kb, e.b});
+            adj[kb].push_back({ka, e.a});
+        }
+        // Trace loops in this local graph
+        std::unordered_set<PosKey, PosKeyHash> visited;
+        for (auto& [start_key, _] : adj) {
+            if (visited.count(start_key)) continue;
+            std::vector<int> loop;
+            PosKey cur = start_key, prev = {INT64_MIN, INT64_MIN, INT64_MIN};
+            bool closed = false;
+            for (int step = 0; step < 200000; step++) {
+                if (visited.count(cur) && loop.size() > 2) {
+                    if (cur == start_key) closed = true;
+                    break;
+                }
+                visited.insert(cur);
+                auto& nbrs = adj[cur];
+                PosKey next_key = {INT64_MIN, INT64_MIN, INT64_MIN};
+                for (auto& [nk, ni] : nbrs) {
+                    if (nk == prev) continue;
+                    if (nk == start_key && loop.size() > 2) {
+                        loop.push_back(ni);
+                        next_key = start_key;
+                        closed = true;
+                        break;
+                    }
+                    if (!visited.count(nk)) {
+                        loop.push_back(ni);
+                        next_key = nk;
+                        break;
+                    }
+                }
+                if (next_key.x == INT64_MIN) break;
+                if (closed) break;
+                prev = cur;
+                cur = next_key;
+            }
+            if (closed && loop.size() >= 3) loops.push_back(std::move(loop));
+        }
+    }
+
+    // Filter Z-perpendicular loops and find longest by perimeter
+    double best_perim = 0;
+    std::vector<int> best_loop;
+    for (auto& loop : loops) {
+        double z_min = 1e18, z_max = -1e18;
+        for (int i : loop) {
+            double z = mesh.V(i, 2);
+            z_min = std::min(z_min, z);
+            z_max = std::max(z_max, z);
+        }
+        if (z_max - z_min > z_tol) continue;
+
+        // Compute perimeter in mm
+        double perim = 0;
+        for (size_t i = 0; i < loop.size(); i++) {
+            int a = loop[i], b = loop[(i+1) % loop.size()];
+            perim += (mesh.V.row(a) - mesh.V.row(b)).norm();
+        }
+        if (perim > best_perim) {
+            best_perim = perim;
+            best_loop = loop;
+        }
+    }
+
+    int total_bnd = 0;
+    for (auto& [k, v] : face_pair_edges) total_bnd += v.size();
+    std::cerr << "[auto-seam] " << nv << "v " << nf << "f, "
+              << total_bnd << " boundary edges, "
+              << face_pair_edges.size() << " face pairs, "
+              << loops.size() << " closed loops" << std::endl;
+    if (!best_loop.empty()) {
+        std::cerr << "[auto-seam] Longest Z-perp loop: "
+                  << best_loop.size() << " vertices, " << best_perim << " mm perimeter" << std::endl;
+    } else {
+        // Count how many loops were Z-perpendicular vs not
+        int z_count = 0;
+        for (auto& loop : loops) {
+            double zmin = 1e18, zmax = -1e18;
+            for (int i : loop) { zmin = std::min(zmin, mesh.V(i,2)); zmax = std::max(zmax, mesh.V(i,2)); }
+            if (zmax - zmin <= z_tol) z_count++;
+        }
+        std::cerr << "[auto-seam] No suitable Z-perp loops (" << z_count << " Z-perp of " << loops.size() << " total)" << std::endl;
+    }
+    return best_loop;
+}
+
 // Normalize UVs to [0,1] with uniform scaling (preserves aspect ratio)
 void normalize_uv_uniform(Eigen::MatrixXd& UV) {
     Eigen::Vector2d mn = UV.colwise().minCoeff();
@@ -407,6 +578,50 @@ std::vector<uint8_t> cut_closed_mesh(const std::vector<uint8_t>& input_glb) {
     auto cut = cgalparam::cut_to_disk(sm);
     auto cut_tri = cgalparam::from_cgal_mesh(cut.cut_mesh);
     return cgalparam::save_gltf_to_memory(cut_tri);
+}
+
+// Cut a closed mesh along a specific vertex loop (from auto-seam Z-loop detection)
+std::vector<uint8_t> cut_mesh_along_loop(const std::vector<uint8_t>& input_glb,
+                                          const std::vector<int>& loop_verts) {
+    if (loop_verts.size() < 3) return cut_closed_mesh(input_glb); // fallback
+
+    auto tri = cgalparam::load_gltf_from_memory(input_glb);
+    auto sm = cgalparam::to_cgal_mesh(tri);
+
+    // Convert vertex indices to CGAL vertex descriptors
+    std::vector<cgalparam::SurfaceMesh::Vertex_index> path;
+    int cgal_nv = static_cast<int>(sm.number_of_vertices());
+    for (int vi : loop_verts) {
+        if (vi >= 0 && vi < cgal_nv) {
+            path.push_back(cgalparam::SurfaceMesh::Vertex_index(vi));
+        }
+    }
+
+    if (path.size() < 3) {
+        std::cerr << "[auto-seam] Loop too short after CGAL mapping, fallback to BFS" << std::endl;
+        if (CGAL::is_closed(sm)) {
+            auto cut = cgalparam::cut_to_disk(sm);
+            auto cut_tri = cgalparam::from_cgal_mesh(cut.cut_mesh);
+            return cgalparam::save_gltf_to_memory(cut_tri);
+        }
+        return input_glb;
+    }
+
+    try {
+        auto cut = cgalparam::cut_along_path(sm, path);
+        auto cut_tri = cgalparam::from_cgal_mesh(cut.cut_mesh);
+        std::cerr << "[auto-seam] Cut along Z-loop: " << tri.V.rows() << " -> "
+                  << cut_tri.V.rows() << " verts" << std::endl;
+        return cgalparam::save_gltf_to_memory(cut_tri);
+    } catch (const std::exception& e) {
+        std::cerr << "[auto-seam] Cut failed: " << e.what() << ", fallback to BFS" << std::endl;
+        if (CGAL::is_closed(sm)) {
+            auto cut = cgalparam::cut_to_disk(sm);
+            auto cut_tri = cgalparam::from_cgal_mesh(cut.cut_mesh);
+            return cgalparam::save_gltf_to_memory(cut_tri);
+        }
+        return input_glb;
+    }
 }
 
 MethodResult run_lscm(const std::vector<uint8_t>& input_glb) {

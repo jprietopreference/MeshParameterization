@@ -172,11 +172,64 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
             gmsh.finalize()
             return False
 
+    # 5b. Find longest Z-perpendicular B-Rep face loop for auto-seam
+    seam_edge_tags = set()  # OCC edge tags that form the seam loop
+    z_tol_seam = 0.5
+    try:
+        best_perim = 0
+        best_face_tag = -1
+        best_edges = []
+        for dim_s, tag_s in gmsh.model.occ.getEntities(dim=2):
+            bnd = gmsh.model.getBoundary([(dim_s, tag_s)], oriented=True, recursive=False)
+            if not bnd:
+                continue
+            # Get Z coords of all mesh nodes on boundary edges
+            zs = []
+            edge_perim = 0
+            for b in bnd:
+                abs_et = abs(b[1])
+                try:
+                    ntags, coords, _ = gmsh.model.mesh.getNodes(1, abs_et, includeBoundary=True)
+                    for i in range(len(ntags)):
+                        zs.append(coords[i * 3 + 2] * scale)
+                    for i in range(len(ntags) - 1):
+                        dx = (coords[(i+1)*3] - coords[i*3]) * scale
+                        dy = (coords[(i+1)*3+1] - coords[i*3+1]) * scale
+                        dz = (coords[(i+1)*3+2] - coords[i*3+2]) * scale
+                        edge_perim += math.sqrt(dx*dx + dy*dy + dz*dz)
+                except:
+                    pass
+            if not zs or (max(zs) - min(zs)) > z_tol_seam:
+                continue
+            if edge_perim > best_perim:
+                best_perim = edge_perim
+                best_face_tag = tag_s
+                best_edges = [abs(b[1]) for b in bnd]
+
+        if best_edges:
+            seam_edge_tags = set(best_edges)
+            print(f"[pipeline] Auto-seam: face {best_face_tag}, "
+                  f"{len(best_edges)} edges, {best_perim:.1f}mm perimeter")
+    except Exception as e:
+        print(f"[pipeline] Auto-seam detection failed: {e}")
+
+    # Collect mesh node tags on seam edges
+    seam_node_tags = set()
+    for edge_tag in seam_edge_tags:
+        try:
+            ntags, _, _ = gmsh.model.mesh.getNodes(1, edge_tag, includeBoundary=True)
+            seam_node_tags.update(int(nt) for nt in ntags)
+        except:
+            pass
+    if seam_node_tags:
+        print(f"[pipeline] Seam nodes: {len(seam_node_tags)}")
+
     # 6. Extract mesh with per-face normals and face IDs
     surfaces = gmsh.model.getEntities(dim=2)
     all_verts = []
     all_normals = []
     all_face_ids = []
+    all_seam = []
     all_tris = []
 
     for face_idx, (dim, tag) in enumerate(surfaces):
@@ -227,6 +280,9 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
             # Face ID
             all_face_ids.append(float(face_idx))
 
+            # Seam flag (1.0 if vertex on seam edge, 0.0 otherwise)
+            all_seam.append(1.0 if int(nt) in seam_node_tags else 0.0)
+
         # Triangles
         for i in range(0, len(tri_node_tags), 3):
             n0, n1, n2 = int(tri_node_tags[i]), int(tri_node_tags[i+1]), int(tri_node_tags[i+2])
@@ -247,13 +303,15 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
     V = np.array(all_verts, dtype=np.float32)
     N = np.array(all_normals, dtype=np.float32)
     FID = np.array(all_face_ids, dtype=np.float32)
+    SEAM = np.array(all_seam, dtype=np.float32)
     F = np.array(all_tris, dtype=np.uint32)
 
     pos_data = V.tobytes()
     nrm_data = N.tobytes()
     fid_data = FID.tobytes()
+    seam_data = SEAM.tobytes()
     idx_data = F.tobytes()
-    buf = pos_data + nrm_data + fid_data + idx_data
+    buf = pos_data + nrm_data + fid_data + seam_data + idx_data
     while len(buf) % 4:
         buf += b'\x00'
 
@@ -262,24 +320,27 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
 
     nrm_off = len(pos_data)
     fid_off = nrm_off + len(nrm_data)
-    idx_off = fid_off + len(fid_data)
+    seam_off = fid_off + len(fid_data)
+    idx_off = seam_off + len(seam_data)
 
     gltf = json.dumps({
         "asset": {"version": "2.0", "generator": "occ_gmsh_pipeline"},
         "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}],
         "meshes": [{"primitives": [{"attributes": {
-            "POSITION": 0, "NORMAL": 1, "_FACE_ID": 2
-        }, "indices": 3, "mode": 4}]}],
+            "POSITION": 0, "NORMAL": 1, "_FACE_ID": 2, "_SEAM": 3
+        }, "indices": 4, "mode": 4}]}],
         "accessors": [
             {"bufferView": 0, "componentType": 5126, "count": nv, "type": "VEC3", "min": mn, "max": mx},
             {"bufferView": 1, "componentType": 5126, "count": nv, "type": "VEC3"},
             {"bufferView": 2, "componentType": 5126, "count": nv, "type": "SCALAR"},
-            {"bufferView": 3, "componentType": 5125, "count": nf * 3, "type": "SCALAR"},
+            {"bufferView": 3, "componentType": 5126, "count": nv, "type": "SCALAR"},
+            {"bufferView": 4, "componentType": 5125, "count": nf * 3, "type": "SCALAR"},
         ],
         "bufferViews": [
             {"buffer": 0, "byteOffset": 0, "byteLength": len(pos_data), "target": 34962},
             {"buffer": 0, "byteOffset": nrm_off, "byteLength": len(nrm_data), "target": 34962},
             {"buffer": 0, "byteOffset": fid_off, "byteLength": len(fid_data), "target": 34962},
+            {"buffer": 0, "byteOffset": seam_off, "byteLength": len(seam_data), "target": 34962},
             {"buffer": 0, "byteOffset": idx_off, "byteLength": len(idx_data), "target": 34963},
         ],
         "buffers": [{"byteLength": len(buf)}],

@@ -114,6 +114,8 @@ ED find_edge(const SurfaceMesh& mesh, VD v1, VD v2) {
     return SurfaceMesh::null_edge();
 }
 
+} // end anonymous namespace (for helper functions above)
+
 /// Cut a mesh along a given vertex path. Duplicates interior path vertices
 /// to create a boundary. Returns the cut mesh.
 SeamCutResult cut_along_path(const SurfaceMesh& input_mesh, const std::vector<VD>& path) {
@@ -234,8 +236,6 @@ SeamCutResult cut_along_path(const SurfaceMesh& input_mesh, const std::vector<VD
 
     return result;
 }
-
-} // anonymous namespace
 
 SeamCutResult cut_to_disk(const SurfaceMesh& input_mesh) {
     SeamCutResult result;

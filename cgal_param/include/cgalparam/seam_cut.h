@@ -28,6 +28,10 @@ struct SeamCutResult {
 /// If the mesh already has a boundary, returns it unchanged.
 SeamCutResult cut_to_disk(const SurfaceMesh& mesh);
 
+/// Cut along a specific vertex path.
+SeamCutResult cut_along_path(const SurfaceMesh& input_mesh,
+                             const std::vector<SurfaceMesh::Vertex_index>& path);
+
 /// Cut along B-Rep face boundaries where one OCC face is Z+ (front) and
 /// the adjacent OCC face is not Z+ (perpendicular or Z-). Uses per-vertex
 /// OCC face IDs from the tessellator (_FACE_ID attribute).

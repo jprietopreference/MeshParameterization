@@ -209,11 +209,10 @@ async function apiConvertObj(objBuffer) {
     return await r.arrayBuffer();
 }
 
-async function apiParameterize(glbBuffer, method, viewWeighted, forceHeal) {
+async function apiParameterize(glbBuffer, method, autoSeam) {
     const params = new URLSearchParams();
     if (method !== 'auto') params.set('method', method);
-    if (viewWeighted) params.set('viewWeighted', 'true');
-    if (forceHeal) params.set('heal', 'true');
+    if (autoSeam) params.set('autoSeam', 'true');
     const r = await fetch(`${API}/api/parameterize?${params}`, {
         method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: glbBuffer,
     });
@@ -292,17 +291,17 @@ $('fileInput').addEventListener('change', async (e) => {
 // --- Parameterize ---
 $('paramBtn').addEventListener('click', async () => {
     const method = $('methodSelect').value;
-    const viewWeighted = $('viewWeighted')?.checked || false;
+    const autoSeam = $('autoSeam')?.checked || false;
     if (!state.inputGlb) return;
 
     $('paramBtn').disabled = true;
     $('paramInfo').textContent = '';
     const label = method === 'auto' ? 'all methods (broker)' : method;
-    setStatus(`Running ${label} on server...`, 'working');
+    setStatus(`Running ${label}${autoSeam ? ' (auto-seam)' : ''} on server...`, 'working');
 
     try {
         const t0 = performance.now();
-        const result = await apiParameterize(state.inputGlb, method, viewWeighted, false);
+        const result = await apiParameterize(state.inputGlb, method, autoSeam);
         const elapsed = performance.now() - t0;
 
         state.resultGlb = result.glb;

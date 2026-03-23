@@ -178,13 +178,15 @@ int main(int argc, char* argv[]) {
     std::string input_path = argv[2];
     std::string output_glb_path;
     std::string json_path;
+    bool auto_seam = false;
 
     // Parse optional args
     for (int i = 3; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--output-glb" && i + 1 < argc) output_glb_path = argv[++i];
         else if (arg == "--json" && i + 1 < argc) json_path = argv[++i];
-        else if (json_path.empty() && arg[0] != '-') json_path = arg; // legacy positional
+        else if (arg == "--auto-seam") auto_seam = true;
+        else if (json_path.empty() && arg[0] != '-') json_path = arg;
     }
 
     MethodResult result;
@@ -215,26 +217,73 @@ int main(int argc, char* argv[]) {
         heal_mesh(welded, false);
         welded = extract_largest_component(welded);
 
-        // Dispatch method
+        // Auto-seam: use _SEAM attribute from GLB (set by Gmsh pipeline from B-Rep edge loop)
+        // to cut the welded mesh along the seam path
+        std::vector<uint8_t> welded_cut = welded;
+        if (auto_seam) {
+            // Read _SEAM from original GLB, map seam vertices to welded mesh
+            auto orig_mesh = meshparam::load_gltf_from_memory(glb);
+            if (orig_mesh.has_seam()) {
+                auto weld_mesh = meshparam::load_gltf_from_memory(welded);
+                struct V3Hash {
+                    size_t operator()(const std::array<int64_t,3>& v) const {
+                        size_t h = 0;
+                        for (auto x : v) h ^= std::hash<int64_t>()(x) + 0x9e3779b9 + (h<<6) + (h>>2);
+                        return h;
+                    }
+                };
+                std::unordered_map<std::array<int64_t,3>, int, V3Hash> weld_pos;
+                for (int i = 0; i < weld_mesh.num_vertices(); i++) {
+                    std::array<int64_t,3> k = {
+                        (int64_t)std::round(weld_mesh.V(i,0)*1e4),
+                        (int64_t)std::round(weld_mesh.V(i,1)*1e4),
+                        (int64_t)std::round(weld_mesh.V(i,2)*1e4)};
+                    weld_pos[k] = i;
+                }
+                // Find welded vertices that are seam vertices
+                std::vector<int> seam_verts;
+                for (int i = 0; i < orig_mesh.num_vertices(); i++) {
+                    if (orig_mesh.seam(i) > 0.5) {
+                        std::array<int64_t,3> k = {
+                            (int64_t)std::round(orig_mesh.V(i,0)*1e4),
+                            (int64_t)std::round(orig_mesh.V(i,1)*1e4),
+                            (int64_t)std::round(orig_mesh.V(i,2)*1e4)};
+                        auto it = weld_pos.find(k);
+                        if (it != weld_pos.end()) seam_verts.push_back(it->second);
+                    }
+                }
+                // Deduplicate
+                std::sort(seam_verts.begin(), seam_verts.end());
+                seam_verts.erase(std::unique(seam_verts.begin(), seam_verts.end()), seam_verts.end());
+
+                if (seam_verts.size() >= 3) {
+                    std::cerr << "[auto-seam] " << seam_verts.size()
+                              << " seam vertices from _SEAM attribute" << std::endl;
+                    welded_cut = cut_mesh_along_loop(welded, seam_verts);
+                }
+            }
+        }
+
+        // Dispatch method — use welded_cut (pre-cut if auto-seam) for methods needing boundary
         if (method == "heat") {
             result = run_heat(welded, false);
         } else if (method == "lscm") {
-            result = run_lscm(welded);
+            result = run_lscm(welded_cut);
         } else if (method == "igl_arap") {
-            result = run_igl_arap(welded);
+            result = run_igl_arap(welded_cut);
         } else if (method == "slim") {
-            result = run_slim(welded);
+            result = run_slim(welded_cut);
         } else if (method == "stein_admm") {
-            result = run_stein(welded);
+            result = run_stein(welded_cut);
         } else if (method == "cgal_conformal") {
-            result = run_cgal(welded, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal", false, {});
+            result = run_cgal(welded_cut, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal", false, {});
         } else if (method == "cgal_arap") {
-            result = run_cgal(welded, cgalparam::ParamMethod::ARAP, "cgal_arap", false, {});
+            result = run_cgal(welded_cut, cgalparam::ParamMethod::ARAP, "cgal_arap", false, {});
         } else if (method == "cgal_authalic") {
-            result = run_cgal(welded, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic", false, {});
+            result = run_cgal(welded_cut, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic", false, {});
 #ifdef HAS_COMPMAJOR
         } else if (method == "cm") {
-            result = run_cm(welded);
+            result = run_cm(welded_cut);
 #endif
         } else {
             result.error = "Unknown method: " + method;
