@@ -264,6 +264,19 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // If auto-seam produced a seam, also try split mode:
+        // split mesh into two halves along the seam, parameterize each independently
+        if (auto_seam && welded_cut.data() != welded.data()) {
+            // The welded_cut mesh has boundary from the seam cut
+            // Check if boundary_loop works now
+            auto cut_mesh = meshparam::load_gltf_from_memory(welded_cut);
+            Eigen::VectorXi bnd;
+            igl::boundary_loop(cut_mesh.F, bnd);
+            if (bnd.size() > 0) {
+                std::cerr << "[auto-seam] Cut mesh has boundary: " << bnd.size() << " vertices" << std::endl;
+            }
+        }
+
         // Dispatch method — use welded_cut (pre-cut if auto-seam) for methods needing boundary
         if (method == "heat") {
             result = run_heat(welded, false);
