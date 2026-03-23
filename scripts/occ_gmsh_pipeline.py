@@ -195,17 +195,8 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
             p2 = gmsh.model.getValue(0, pts[1][1], [])
             if abs(p1[2] - p2[2]) * scale > z_tol_seam:
                 continue
-            # Use meshed edge length (follows actual curve geometry including fillets)
-            try:
-                ntags, coords, _ = gmsh.model.mesh.getNodes(1, tag_e, includeBoundary=True)
-                edge_len = 0
-                for i in range(len(ntags) - 1):
-                    dx = (coords[(i+1)*3] - coords[i*3]) * scale
-                    dy = (coords[(i+1)*3+1] - coords[i*3+1]) * scale
-                    dz = (coords[(i+1)*3+2] - coords[i*3+2]) * scale
-                    edge_len += math.sqrt(dx*dx + dy*dy + dz*dz)
-            except:
-                edge_len = gmsh.model.occ.getMass(1, tag_e) * scale
+            # Use OCC analytical curve length for ranking (consistent, mesh-independent)
+            edge_len = gmsh.model.occ.getMass(1, tag_e) * scale
             avg_z = (p1[2] + p2[2]) / 2.0 * scale
             z_perp_edges.append((tag_e, pts[0][1], pts[1][1], avg_z, edge_len))
 
@@ -254,32 +245,47 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
         all_loops.sort(key=lambda x: (-x[2], x[0]))
         if all_loops:
             top_perim = all_loops[0][2]
-            perim_tol = 1.0  # mm — within 1mm of max, prefer min Z
+            perim_tol = max(1.0, top_perim * 0.02)  # 2% tolerance — prefer min Z among similar loops
             candidates = [l for l in all_loops if l[2] >= top_perim - perim_tol]
             candidates.sort(key=lambda x: x[0])  # sort by Z ascending
             best_z = candidates[0][0]
             best_edges = candidates[0][1]
             best_perim = candidates[0][2]
 
-        if best_edges:
-            seam_edge_tags = set(best_edges)
-            seam_z = best_z / scale if scale else best_z  # in OCC units
-            print(f"[pipeline] Auto-seam: {len(best_edges)} edges, "
-                  f"{best_perim:.1f}mm perimeter, z={best_z:.2f}mm")
+        # Try candidates in order (longest first, min Z on tie) until we find
+        # one that produces a balanced split (each half >= 20% of faces)
+        all_faces = gmsh.model.occ.getEntities(dim=2)
+        total_faces = len(all_faces)
+        min_frac = 0.15  # each half must have at least 15% of faces
 
-            # Classify OCC faces into top (Z >= seam) and bottom (Z < seam)
-            # Use face bounding box centroid Z
-            top_face_tags = set()
-            bot_face_tags = set()
-            for dim_f, tag_f in gmsh.model.occ.getEntities(dim=2):
+        for cand_z, cand_edges, cand_perim in candidates:
+            cand_seam_z = cand_z / scale if scale else cand_z
+            top_tags = set()
+            bot_tags = set()
+            for dim_f, tag_f in all_faces:
                 bb = gmsh.model.getBoundingBox(dim_f, tag_f)
-                face_center_z = (bb[2] + bb[5]) / 2.0  # in OCC units
-                if face_center_z >= seam_z:
-                    top_face_tags.add(tag_f)
+                face_center_z = (bb[2] + bb[5]) / 2.0
+                if face_center_z >= cand_seam_z:
+                    top_tags.add(tag_f)
                 else:
-                    bot_face_tags.add(tag_f)
-            print(f"[pipeline] Split: {len(top_face_tags)} top faces, "
-                  f"{len(bot_face_tags)} bottom faces")
+                    bot_tags.add(tag_f)
+            frac_top = len(top_tags) / total_faces
+            frac_bot = len(bot_tags) / total_faces
+            if frac_top >= min_frac and frac_bot >= min_frac:
+                best_edges = cand_edges
+                best_perim = cand_perim
+                best_z = cand_z
+                seam_edge_tags = set(best_edges)
+                seam_z = cand_seam_z
+                top_face_tags = top_tags
+                bot_face_tags = bot_tags
+                print(f"[pipeline] Auto-seam: {len(best_edges)} edges, "
+                      f"{best_perim:.1f}mm perimeter, z={best_z:.2f}mm")
+                print(f"[pipeline] Split: {len(top_face_tags)} top faces ({frac_top:.0%}), "
+                      f"{len(bot_face_tags)} bottom faces ({frac_bot:.0%})")
+                break
+        else:
+            print(f"[pipeline] No balanced seam found among {len(candidates)} candidates")
     except Exception as e:
         print(f"[pipeline] Auto-seam detection failed: {e}")
         top_face_tags = set()
@@ -472,13 +478,17 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
         print(f"[pipeline] Extent: {extent_mm[0]:.1f} x {extent_mm[1]:.1f} x {extent_mm[2]:.1f} mm")
         return True
 
-    # Build parts list
-    if has_split:
-        parts = [top_data, bot_data]
+    # Write output: two separate GLBs if split, else one
+    if has_split and output_back_path:
+        # Two files: front (top) and back (bottom)
+        write_glb(output_path, [top_data])
+        write_glb(output_back_path, [bot_data])
+        return True
+    elif has_split:
+        # Single file with two primitives
+        return write_glb(output_path, [top_data, bot_data])
     else:
-        parts = [top_data]
-
-    return write_glb(output_path, parts)
+        return write_glb(output_path, [top_data])
 
 
 def main():
