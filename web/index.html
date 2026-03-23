@@ -45,16 +45,6 @@
                         <input type="checkbox" id="viewWeighted"> View-weighted (+Z priority)
                     </label>
                 </div>
-                <div class="row">
-                    <label>
-                        <input type="checkbox" id="forceHeal"> Force mesh healing
-                    </label>
-                </div>
-                <div class="row">
-                    <label>
-                        <input type="checkbox" id="includeRemesh"> Include remeshed variants
-                    </label>
-                </div>
                 <button id="paramBtn" class="action-btn" disabled>Run Parameterization</button>
                 <div id="paramInfo" class="info-text"></div>
             </section>
@@ -94,6 +84,14 @@
                     <tr><td>Triangles</td><td id="metTris">-</td></tr>
                     <tr><td>STEP → GLB</td><td id="metStepTime">-</td></tr>
                     <tr><td>Param time</td><td id="metParamTime">-</td></tr>
+                    <tr><td colspan="2" style="font-weight:bold;padding-top:6px">Mesh Quality</td></tr>
+                    <tr><td>Vertices</td><td id="metVerts">-</td></tr>
+                    <tr><td>Triangles</td><td id="metTris">-</td></tr>
+                    <tr><td>Equilateral %</td><td id="metEquilateral">-</td></tr>
+                    <tr><td>Min angle</td><td id="metMinAngle">-</td></tr>
+                    <tr><td>Max aspect ratio</td><td id="metMaxAspect">-</td></tr>
+                    <tr><td>Edge len (min/mean/max)</td><td id="metEdgeLen">-</td></tr>
+                    <tr><td colspan="2" style="font-weight:bold;padding-top:6px">UV Quality</td></tr>
                     <tr><td>Angle (mean)</td><td id="metAngle">-</td></tr>
                     <tr><td>Angle (max)</td><td id="metAngleMax">-</td></tr>
                     <tr><td>Area (mean)</td><td id="metArea">-</td></tr>

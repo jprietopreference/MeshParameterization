@@ -20,7 +20,7 @@ if (BABYLON.DracoCompression) {
 const API = 'http://localhost:8080';
 
 // --- State ---
-const state = { inputGlb: null, resultGlb: null, fileName: '', isStep: false, stepBuffer: null };
+const state = { inputGlb: null, resultGlb: null, fileName: '' };
 
 // --- DOM ---
 const $ = id => document.getElementById(id);
@@ -53,6 +53,7 @@ function setStatus(msg, type = '') { $('statusBar').textContent = msg; $('status
 function setMetric(id, val) { $(id).textContent = val; }
 function clearMetrics() {
     ['metMethod','metVerts','metTris','metStepTime','metParamTime',
+     'metEquilateral','metMinAngle','metMaxAspect','metEdgeLen',
      'metAngle','metAngleMax','metArea','metStretch','metScore'].forEach(id => setMetric(id, '-'));
     $('comparisonBody').innerHTML = '';
 }
@@ -84,12 +85,81 @@ async function loadGlb(glbBuffer, applyChecker = false) {
             // Inject custom attributes (_SEAM, _FACE_ID) from raw GLB
             if (currentMesh && lastGlbBuffer) injectCustomAttrs(currentMesh, lastGlbBuffer);
             if (applyChecker && currentMesh?.isVerticesDataPresent(BABYLON.VertexBuffer.UVKind)) applyCheckerboard(currentMesh);
-            let tv = 0, tt = 0;
-            container.meshes.forEach(m => { tv += m.getTotalVertices(); tt += m.getTotalIndices()/3; });
-            setMetric('metVerts', tv.toLocaleString());
-            setMetric('metTris', Math.round(tt).toLocaleString());
+            if (currentMesh) showMeshQuality(currentMesh);
         }
     } finally { URL.revokeObjectURL(url); }
+}
+
+function computeMeshQuality(mesh) {
+    const positions = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+    const indices = mesh.getIndices();
+    if (!positions || !indices) return null;
+
+    const ntri = indices.length / 3;
+    let ratioSum = 0, ratioMax = 0;
+    let minAngleMin = 180, minAngleSum = 0;
+    let edgeMin = Infinity, edgeMax = 0, edgeSum = 0, edgeCount = 0;
+    let equilateral = 0; // ratio < 1.5
+
+    for (let t = 0; t < indices.length; t += 3) {
+        const i0 = indices[t], i1 = indices[t+1], i2 = indices[t+2];
+        const x0 = positions[i0*3], y0 = positions[i0*3+1], z0 = positions[i0*3+2];
+        const x1 = positions[i1*3], y1 = positions[i1*3+1], z1 = positions[i1*3+2];
+        const x2 = positions[i2*3], y2 = positions[i2*3+1], z2 = positions[i2*3+2];
+
+        const e0 = Math.sqrt((x1-x0)**2 + (y1-y0)**2 + (z1-z0)**2);
+        const e1 = Math.sqrt((x2-x1)**2 + (y2-y1)**2 + (z2-z1)**2);
+        const e2 = Math.sqrt((x0-x2)**2 + (y0-y2)**2 + (z0-z2)**2);
+
+        const longest = Math.max(e0, e1, e2);
+        const shortest = Math.min(e0, e1, e2);
+        const ratio = shortest > 1e-10 ? longest / shortest : 999;
+        ratioSum += ratio;
+        if (ratio > ratioMax) ratioMax = ratio;
+        if (ratio < 1.5) equilateral++;
+
+        // Min angle via law of cosines
+        const edges = [e0, e1, e2];
+        const sides = [[e1,e2,e0],[e0,e2,e1],[e0,e1,e2]]; // opposite edge last
+        let triMinAngle = 180;
+        for (const [a, b, c] of sides) {
+            const cosA = (a*a + b*b - c*c) / (2*a*b + 1e-15);
+            const angle = Math.acos(Math.max(-1, Math.min(1, cosA))) * 180 / Math.PI;
+            if (angle < triMinAngle) triMinAngle = angle;
+        }
+        minAngleSum += triMinAngle;
+        if (triMinAngle < minAngleMin) minAngleMin = triMinAngle;
+
+        for (const el of [e0, e1, e2]) {
+            if (el < edgeMin) edgeMin = el;
+            if (el > edgeMax) edgeMax = el;
+            edgeSum += el;
+            edgeCount++;
+        }
+    }
+
+    return {
+        triangles: ntri,
+        vertices: positions.length / 3,
+        aspectMean: ratioSum / ntri,
+        aspectMax: ratioMax,
+        equilateralPct: 100 * equilateral / ntri,
+        minAngleMean: minAngleSum / ntri,
+        minAngleMin: minAngleMin,
+        edgeMin, edgeMax,
+        edgeMean: edgeSum / edgeCount,
+    };
+}
+
+function showMeshQuality(mesh) {
+    const q = computeMeshQuality(mesh);
+    if (!q) return;
+    setMetric('metVerts', q.vertices.toLocaleString());
+    setMetric('metTris', q.triangles.toLocaleString());
+    setMetric('metEquilateral', `${q.equilateralPct.toFixed(1)}% (aspect < 1.5)`);
+    setMetric('metMinAngle', `${q.minAngleMean.toFixed(1)}\u00b0 mean, ${q.minAngleMin.toFixed(1)}\u00b0 min`);
+    setMetric('metMaxAspect', q.aspectMax.toFixed(1));
+    setMetric('metEdgeLen', `${q.edgeMin.toFixed(3)} / ${q.edgeMean.toFixed(3)} / ${q.edgeMax.toFixed(3)}`);
 }
 
 function applyCheckerboard(mesh) {
@@ -110,7 +180,7 @@ async function apiHealth() {
 }
 
 async function apiTessellate(stepBuffer) {
-    const r = await fetch(`${API}/api/tessellate/step`, {
+    const r = await fetch(`${API}/api/tessellate/step?tessellator=gmsh`, {
         method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: stepBuffer,
     });
     if (!r.ok) { const e = await r.text(); throw new Error(e); }
@@ -136,25 +206,6 @@ async function apiParameterize(glbBuffer, method, viewWeighted, forceHeal) {
     };
 }
 
-async function apiParameterizeStep(stepBuffer, viewWeighted, forceHeal, includeRemesh) {
-    const params = new URLSearchParams();
-    if (viewWeighted) params.set('viewWeighted', 'true');
-    if (forceHeal) params.set('heal', 'true');
-    if (includeRemesh) params.set('remesh', 'true');
-    const r = await fetch(`${API}/api/parameterize/step?${params}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: stepBuffer,
-    });
-    if (!r.ok) { const e = await r.text(); throw new Error(e); }
-    return {
-        glb: await r.arrayBuffer(),
-        method: r.headers.get('X-Method'),
-        metrics: r.headers.get('X-Metrics'),
-        allMethods: r.headers.get('X-All-Methods'),
-        healInfo: r.headers.get('X-Heal-Info'),
-        session: r.headers.get('X-Session'),
-    };
-}
-
 // --- File input ---
 $('fileInput').addEventListener('change', async (e) => {
     const file = e.target.files[0];
@@ -167,17 +218,13 @@ $('fileInput').addEventListener('change', async (e) => {
     try {
         const buffer = await file.arrayBuffer();
         if (ext === 'step' || ext === 'stp') {
-            state.isStep = true;
-            state.stepBuffer = buffer;
             $('fileInfo').textContent = `${file.name} (${(file.size/1024).toFixed(1)} KB) - STEP`;
-            setStatus('STEP → GLB (server-side OCC preview)...', 'working');
+            setStatus('STEP → GLB (Gmsh tessellation)...', 'working');
             const t0 = performance.now();
             state.inputGlb = await apiTessellate(buffer);
             setMetric('metStepTime', `${(performance.now()-t0).toFixed(0)} ms`);
-            $('fileInfo').textContent = `${file.name} - STEP (OCC+ACIS available)`;
+            $('fileInfo').textContent = `${file.name} - STEP (Gmsh)`;
         } else {
-            state.isStep = false;
-            state.stepBuffer = null;
             $('fileInfo').textContent = `${file.name} (${(file.size/1024).toFixed(1)} KB) - GLB`;
             state.inputGlb = buffer;
         }
@@ -199,29 +246,16 @@ $('fileInput').addEventListener('change', async (e) => {
 $('paramBtn').addEventListener('click', async () => {
     const method = $('methodSelect').value;
     const viewWeighted = $('viewWeighted')?.checked || false;
-    const forceHeal = $('forceHeal')?.checked || false;
-    const includeRemesh = $('includeRemesh')?.checked || false;
     if (!state.inputGlb) return;
 
     $('paramBtn').disabled = true;
     $('paramInfo').textContent = '';
     const label = method === 'auto' ? 'all methods (broker)' : method;
-    const extras = [
-        forceHeal ? 'heal' : '',
-        includeRemesh ? 'remesh' : '',
-        state.isStep ? 'OCC+ACIS' : '',
-    ].filter(Boolean).join(', ');
-    setStatus(`Running ${label}${extras ? ' (' + extras + ')' : ''} on server...`, 'working');
+    setStatus(`Running ${label} on server...`, 'working');
 
     try {
         const t0 = performance.now();
-        let result;
-        if (state.isStep && state.stepBuffer && method === 'auto') {
-            // Use STEP endpoint for dual tessellation comparison
-            result = await apiParameterizeStep(state.stepBuffer, viewWeighted, forceHeal, includeRemesh);
-        } else {
-            result = await apiParameterize(state.inputGlb, method, viewWeighted, forceHeal);
-        }
+        const result = await apiParameterize(state.inputGlb, method, viewWeighted, false);
         const elapsed = performance.now() - t0;
 
         state.resultGlb = result.glb;

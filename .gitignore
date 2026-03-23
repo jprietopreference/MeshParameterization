@@ -1,3 +1,5 @@
+benchmark/
+benchmark_results/
 build/
 build_wasm/
 .cache/
@@ -5,3 +7,5 @@ build_wasm/
 *.swp
 *.user
 CMakeUserPresets.json
+scripts/__pycache__/
+Spatial/

@@ -167,3 +167,79 @@ target_link_libraries(meshparam_server PRIVATE meshparam_lib cgalparam_lib)
 if(MSVC)
     target_compile_definitions(meshparam_server PRIVATE _USE_MATH_DEFINES NOMINMAX)
 endif()
+
+# --------------------------------------------------------------------------
+# Benchmark CLI (process-isolated per-method parameterization)
+# --------------------------------------------------------------------------
+add_executable(meshparam_bench bench_cli.cpp)
+
+target_include_directories(meshparam_bench PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}  # methods.inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/flip-free-parametrization/include
+)
+
+target_link_libraries(meshparam_bench PRIVATE meshparam_lib cgalparam_lib)
+
+if(MSVC)
+    target_compile_definitions(meshparam_bench PRIVATE _USE_MATH_DEFINES NOMINMAX)
+endif()
+
+# --------------------------------------------------------------------------
+# Composite Majorization library (Shtengel et al. 2017)
+# --------------------------------------------------------------------------
+set(CM_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../extern/CompMajor/src")
+
+# Find MKL (required for Pardiso solver)
+find_package(MKL CONFIG QUIET)
+if(NOT MKL_FOUND)
+    # Try vcpkg path
+    find_path(MKL_INCLUDE_DIR mkl.h HINTS "C:/vcpkg/installed/x64-windows/include")
+    find_library(MKL_CORE_LIB mkl_core HINTS "C:/vcpkg/installed/x64-windows/lib")
+    find_library(MKL_INTEL_LIB mkl_intel_lp64 HINTS "C:/vcpkg/installed/x64-windows/lib")
+    find_library(MKL_THREAD_LIB mkl_sequential HINTS "C:/vcpkg/installed/x64-windows/lib")
+    if(MKL_INCLUDE_DIR AND MKL_CORE_LIB)
+        set(MKL_FOUND TRUE)
+        set(MKL_LIBRARIES ${MKL_INTEL_LIB} ${MKL_CORE_LIB} ${MKL_THREAD_LIB})
+        set(MKL_INCLUDE_DIRS ${MKL_INCLUDE_DIR})
+        message(STATUS "MKL found via vcpkg: ${MKL_INCLUDE_DIR}")
+    endif()
+endif()
+
+if(MKL_FOUND)
+    add_library(compmajor_lib
+        ${CM_SRC_DIR}/Energy.cpp
+        ${CM_SRC_DIR}/EnergySymDir.cpp
+        ${CM_SRC_DIR}/Newton.cpp
+        ${CM_SRC_DIR}/Solver.cpp
+        ${CM_SRC_DIR}/PardisoSolver.cpp
+        ${CM_SRC_DIR}/Utils.cpp
+    )
+
+    target_include_directories(compmajor_lib PUBLIC
+        ${CM_SRC_DIR}
+        ${MKL_INCLUDE_DIRS}
+    )
+
+    if(TARGET MKL::MKL)
+        target_link_libraries(compmajor_lib PUBLIC Eigen3::Eigen igl::core MKL::MKL)
+    else()
+        target_link_libraries(compmajor_lib PUBLIC Eigen3::Eigen igl::core ${MKL_LIBRARIES})
+    endif()
+
+    if(MSVC)
+        target_compile_definitions(compmajor_lib PUBLIC _USE_MATH_DEFINES NOMINMAX)
+        target_compile_options(compmajor_lib PUBLIC /EHsc)
+    endif()
+
+    # Link CM to bench CLI
+    target_link_libraries(meshparam_bench PRIVATE compmajor_lib)
+    target_compile_definitions(meshparam_bench PRIVATE HAS_COMPMAJOR=1)
+
+    # Link CM to server
+    target_link_libraries(meshparam_server PRIVATE compmajor_lib)
+    target_compile_definitions(meshparam_server PRIVATE HAS_COMPMAJOR=1)
+
+    message(STATUS "CompMajor (Composite Majorization) enabled with MKL Pardiso")
+else()
+    message(STATUS "MKL not found — CompMajor disabled")
+endif()

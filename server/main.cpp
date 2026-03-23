@@ -416,6 +416,17 @@ MethodResult run_heat(const std::vector<uint8_t>& input_glb, bool view_weighted)
     return r;
 }
 
+// Cut a closed mesh to disk topology using CGAL's BFS seam,
+// returning GLB with boundary. Used by SLIM/igl_arap which need boundary.
+std::vector<uint8_t> cut_closed_mesh(const std::vector<uint8_t>& input_glb) {
+    auto tri = cgalparam::load_gltf_from_memory(input_glb);
+    auto sm = cgalparam::to_cgal_mesh(tri);
+    if (!CGAL::is_closed(sm)) return input_glb; // already has boundary
+    auto cut = cgalparam::cut_to_disk(sm);
+    auto cut_tri = cgalparam::from_cgal_mesh(cut.cut_mesh);
+    return cgalparam::save_gltf_to_memory(cut_tri);
+}
+
 MethodResult run_lscm(const std::vector<uint8_t>& input_glb) {
     MethodResult r;
     r.method = "lscm";
@@ -486,10 +497,12 @@ MethodResult run_igl_arap(const std::vector<uint8_t>& input_glb) {
     r.method = "igl_arap";
     auto t0 = std::chrono::high_resolution_clock::now();
     try {
-        auto mesh = meshparam::load_gltf_from_memory(input_glb);
+        // Cut closed meshes to create boundary
+        auto glb_with_bnd = cut_closed_mesh(input_glb);
+        auto mesh = meshparam::load_gltf_from_memory(glb_with_bnd);
         Eigen::VectorXi bnd;
         igl::boundary_loop(mesh.F, bnd);
-        if (bnd.size() == 0) { r.error = "needs boundary"; goto end_arap; }
+        if (bnd.size() == 0) { r.error = "needs boundary (cut failed)"; goto end_arap; }
         {
             // Init from LSCM
             Eigen::VectorXi b2(2); Eigen::MatrixXd bc2(2,2);
@@ -613,15 +626,16 @@ MethodResult run_slim(const std::vector<uint8_t>& input_glb, int iterations = 50
     r.method = "slim";
     auto t0 = std::chrono::high_resolution_clock::now();
     try {
-        auto mesh = meshparam::load_gltf_from_memory(input_glb);
+        // Cut closed meshes to create boundary
+        auto glb_with_bnd = cut_closed_mesh(input_glb);
+        auto mesh = meshparam::load_gltf_from_memory(glb_with_bnd);
         int nv = mesh.num_vertices(), nf = mesh.num_faces();
 
-        // SLIM needs a mesh with boundary. If closed, apply BFS seam cut.
         Eigen::VectorXi bnd;
         igl::boundary_loop(mesh.F, bnd);
 
         if (bnd.size() == 0) {
-            r.error = "SLIM requires mesh with boundary (closed mesh — needs seam cut)";
+            r.error = "SLIM: mesh still closed after cut attempt";
             auto t1 = std::chrono::high_resolution_clock::now();
             r.elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
             return r;
@@ -900,6 +914,40 @@ std::vector<uint8_t> tessellate_step(const std::string& occ_cli, const std::stri
     if (ret != 0) {
         std::remove(tmp_glb.c_str());
         throw std::runtime_error("OCC tessellation failed");
+    }
+
+    std::ifstream f(tmp_glb, std::ios::binary | std::ios::ate);
+    size_t sz = f.tellg(); f.seekg(0);
+    std::vector<uint8_t> data(sz);
+    f.read(reinterpret_cast<char*>(data.data()), sz);
+    f.close();
+    std::remove(tmp_glb.c_str());
+    return data;
+}
+
+// ============================================================
+// Gmsh tessellation (OCC import + Gmsh isotropic mesh + OCC normals)
+// ============================================================
+std::vector<uint8_t> tessellate_step_gmsh(const std::string& gmsh_cli, const std::string& step_data, double deflection) {
+    auto tid = std::this_thread::get_id();
+    std::ostringstream ss;
+    const char* tmp_dir = std::getenv("TEMP");
+    if (!tmp_dir) tmp_dir = std::getenv("TMP");
+    if (!tmp_dir) tmp_dir = ".";
+    ss << tmp_dir << "/meshparam_gmsh_" << tid;
+    std::string tmp_step = ss.str() + ".step";
+    std::string tmp_glb = ss.str() + ".glb";
+
+    { std::ofstream f(tmp_step, std::ios::binary); f.write(step_data.data(), step_data.size()); }
+
+    // gmsh_cli is "python scripts/occ_gmsh_pipeline.py"
+    std::string cmd = gmsh_cli + " \"" + tmp_step + "\" \"" + tmp_glb + "\"";
+    int ret = std::system(cmd.c_str());
+    std::remove(tmp_step.c_str());
+
+    if (ret != 0) {
+        std::remove(tmp_glb.c_str());
+        throw std::runtime_error("Gmsh tessellation failed");
     }
 
     std::ifstream f(tmp_glb, std::ios::binary | std::ios::ate);
@@ -1263,7 +1311,7 @@ int main(int argc, char* argv[]) {
             methods_to_run.push_back({forced_method, false});
         }
 
-        // Run all methods in parallel
+        // Run all methods in parallel, with SEH to catch access violations
         std::vector<MethodResult> results(methods_to_run.size());
         std::vector<std::thread> workers;
 
@@ -1272,6 +1320,7 @@ int main(int argc, char* argv[]) {
                 const auto& mdef = methods_to_run[i];
                 const auto& mesh_input = mdef.on_remeshed ? input_remeshed : input_for_param;
                 std::string suffix = mdef.on_remeshed ? "_remeshed" : "";
+
                 if (mdef.name == "heat") {
                     results[i] = run_heat(mesh_input, view_weighted);
                     results[i].method += suffix;
@@ -1474,14 +1523,14 @@ int main(int argc, char* argv[]) {
         res.set_content(std::string(r.glb.begin(), r.glb.end()), "model/gltf-binary");
     });
 
-    // --- STEP tessellation ---
-    svr.Post("/api/tessellate/step", [&occ_cli, &acis_cli](const httplib::Request& req, httplib::Response& res) {
-        std::string tess = req.has_param("tessellator") ? req.get_param_value("tessellator") : "occ";
+    // --- STEP tessellation (Gmsh default, OCC fallback) ---
+    svr.Post("/api/tessellate/step", [&occ_cli, &gmsh_cli](const httplib::Request& req, httplib::Response& res) {
+        std::string tess = req.has_param("tessellator") ? req.get_param_value("tessellator") : "gmsh";
         double defl = req.has_param("deflection") ? std::stod(req.get_param_value("deflection")) : 1.0;
         try {
             std::vector<uint8_t> glb;
-            if (tess == "acis" && !acis_cli.empty()) {
-                glb = tessellate_step_acis(acis_cli, req.body, defl);
+            if (tess == "gmsh" && !gmsh_cli.empty()) {
+                glb = tessellate_step_gmsh(gmsh_cli, req.body, defl);
             } else if (!occ_cli.empty()) {
                 glb = tessellate_step(occ_cli, req.body, defl);
             } else {
@@ -1494,164 +1543,8 @@ int main(int argc, char* argv[]) {
         }
     });
 
-    // --- STEP → dual tessellation → parameterize (all-in-one) ---
-    svr.Post("/api/parameterize/step", [&occ_cli, &acis_cli, &remesh_cli](const httplib::Request& req, httplib::Response& res) {
-        bool view_weighted = req.has_param("viewWeighted") && req.get_param_value("viewWeighted") == "true";
-        bool do_remesh = req.has_param("remesh") && req.get_param_value("remesh") == "true";
-        bool force_heal = req.has_param("heal") && req.get_param_value("heal") == "true";
-        double defl = req.has_param("deflection") ? std::stod(req.get_param_value("deflection")) : 1.0;
+    // (Removed: /api/parameterize/step — Gmsh now tessellates STEP to GLB, then normal /api/parameterize is used)
 
-        // Tessellate with available engines
-        struct TessResult { std::string name; std::vector<uint8_t> glb; bool ok; };
-        std::vector<TessResult> tessellations;
-
-        if (!occ_cli.empty()) {
-            try {
-                auto t0 = std::chrono::high_resolution_clock::now();
-                auto glb = tessellate_step(occ_cli, req.body, defl);
-                auto ms = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - t0).count();
-                std::cout << "[step] OCC tessellation: " << glb.size() << " bytes (" << ms << " ms)" << std::endl;
-                tessellations.push_back({"occ", std::move(glb), true});
-            } catch (const std::exception& e) {
-                std::cout << "[step] OCC failed: " << e.what() << std::endl;
-            }
-        }
-
-        if (!acis_cli.empty()) {
-            try {
-                auto t0 = std::chrono::high_resolution_clock::now();
-                auto glb = tessellate_step_acis(acis_cli, req.body, defl);
-                auto ms = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - t0).count();
-                std::cout << "[step] ACIS tessellation: " << glb.size() << " bytes (" << ms << " ms)" << std::endl;
-                tessellations.push_back({"acis", std::move(glb), true});
-            } catch (const std::exception& e) {
-                std::cout << "[step] ACIS failed: " << e.what() << std::endl;
-            }
-        }
-
-        if (tessellations.empty()) {
-            res.status = 500;
-            res.set_content("{\"error\":\"All tessellations failed\"}", "application/json");
-            return;
-        }
-
-        // For each tessellation, run all parameterization methods
-        std::vector<MethodResult> all_results;
-        std::vector<std::thread> workers;
-        std::mutex results_mutex;
-
-        std::vector<std::string> methods = {"heat", "lscm", "igl_arap", "slim", "cgal_conformal", "cgal_arap", "cgal_authalic"};
-
-        for (auto& tess : tessellations) {
-            // Heal + weld
-            auto input = tess.glb;
-            auto input_original = input;
-            heal_mesh(input, force_heal);
-            auto input_welded = weld_vertices(input);
-            heal_mesh(input_welded, force_heal);
-
-            for (auto& method_name : methods) {
-                workers.emplace_back([&, method_name, input_welded, input_original, tess_name = tess.name]() {
-                    MethodResult r;
-                    if (method_name == "heat") {
-                        r = run_heat(input_welded, view_weighted);
-                    } else if (method_name == "lscm") {
-                        r = run_lscm(input_welded);
-                    } else if (method_name == "igl_arap") {
-                        r = run_igl_arap(input_welded);
-                    } else if (method_name == "stein_admm") {
-                        r = run_stein(input_welded);
-                    } else if (method_name == "slim") {
-                        r = run_slim(input_welded);
-                    } else if (method_name == "cgal_conformal") {
-                        r = run_cgal(input_welded, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal", view_weighted, input_original);
-                    } else if (method_name == "cgal_arap") {
-                        r = run_cgal(input_welded, cgalparam::ParamMethod::ARAP, "cgal_arap", view_weighted, input_original);
-                    } else if (method_name == "cgal_authalic") {
-                        r = run_cgal(input_welded, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic", view_weighted, input_original);
-                    }
-                    r.method = method_name + "_" + tess_name;
-
-                    std::lock_guard<std::mutex> lock(results_mutex);
-                    all_results.push_back(std::move(r));
-                });
-            }
-
-            // Optionally add remeshed variants
-            if (do_remesh && !remesh_cli.empty()) {
-                try {
-                    auto remeshed = remesh_isotropic(remesh_cli, input_welded);
-                    for (auto& method_name : methods) {
-                        workers.emplace_back([&, method_name, remeshed, tess_name = tess.name]() {
-                            MethodResult r;
-                            if (method_name == "heat") {
-                                r = run_heat(remeshed, view_weighted);
-                            } else if (method_name == "cgal_conformal") {
-                                r = run_cgal(remeshed, cgalparam::ParamMethod::DiscreteConformal, "cgal_conformal", false, {});
-                            } else if (method_name == "cgal_arap") {
-                                r = run_cgal(remeshed, cgalparam::ParamMethod::ARAP, "cgal_arap", false, {});
-                            } else if (method_name == "cgal_authalic") {
-                                r = run_cgal(remeshed, cgalparam::ParamMethod::DiscreteAuthalic, "cgal_authalic", false, {});
-                            }
-                            r.method = method_name + "_" + tess_name + "_remeshed";
-
-                            std::lock_guard<std::mutex> lock(results_mutex);
-                            all_results.push_back(std::move(r));
-                        });
-                    }
-                } catch (...) {}
-            }
-        }
-
-        for (auto& w : workers) w.join();
-
-        // Pick best
-        int best_idx = -1;
-        double best_score = 1e18;
-        for (size_t i = 0; i < all_results.size(); ++i) {
-            auto s = all_results[i].score();
-            std::cout << "  [step-broker] " << all_results[i].method
-                      << ": " << (all_results[i].success ? "OK" : "FAIL")
-                      << " score=" << s << std::endl;
-            if (s < best_score) { best_score = s; best_idx = static_cast<int>(i); }
-        }
-
-        if (best_idx < 0) {
-            res.status = 500;
-            res.set_content("{\"error\":\"All methods failed\"}", "application/json");
-            return;
-        }
-
-        auto& best = all_results[best_idx];
-        std::cout << "  [step-broker] Winner: " << best.method << " (score=" << best.score() << ")" << std::endl;
-
-#ifdef HAS_DRACO
-        for (auto& r : all_results) {
-            if (r.success && !r.glb.empty()) r.glb = draco_compress_glb(r.glb);
-        }
-#endif
-
-        // Store session
-        cleanup_sessions();
-        std::string session_id = generate_session_id();
-        { std::lock_guard<std::mutex> lock(g_sessions_mutex);
-          g_sessions[session_id] = {all_results, std::chrono::steady_clock::now()}; }
-
-        // Build all-methods JSON
-        std::ostringstream all_json;
-        all_json << "[";
-        for (size_t i = 0; i < all_results.size(); ++i) {
-            if (i > 0) all_json << ",";
-            all_json << all_results[i].to_json();
-        }
-        all_json << "]";
-
-        res.set_header("X-Method", best.method);
-        res.set_header("X-Metrics", best.to_json());
-        res.set_header("X-All-Methods", all_json.str());
-        res.set_header("X-Session", session_id);
-        res.set_content(std::string(best.glb.begin(), best.glb.end()), "model/gltf-binary");
-    });
 
     // --- Static files ---
     svr.set_mount_point("/", web_root);
@@ -1660,15 +1553,14 @@ int main(int argc, char* argv[]) {
     std::cout << "  Port:     " << port << std::endl;
     std::cout << "  Threads:  " << threads << std::endl;
     std::cout << "  Web root: " << web_root << std::endl;
-    std::cout << "  OCC CLI:  " << (occ_cli.empty() ? "(none)" : occ_cli) << std::endl;
-    std::cout << "  ACIS CLI: " << (acis_cli.empty() ? "(none)" : acis_cli) << std::endl;
-    std::cout << "  Remesh:   " << (remesh_cli.empty() ? "(none)" : remesh_cli) << std::endl;
+    std::cout << "  Gmsh CLI: " << (gmsh_cli.empty() ? "(none)" : gmsh_cli) << std::endl;
+    std::cout << "  OCC CLI:  " << (occ_cli.empty() ? "(none - fallback)" : occ_cli) << std::endl;
     std::cout << "  Endpoints:" << std::endl;
     std::cout << "    POST /api/parameterize          (broker: auto-picks best)" << std::endl;
     std::cout << "    POST /api/parameterize?method=X  (force: heat|cgal_conformal|cgal_arap|cgal_authalic)" << std::endl;
     std::cout << "    POST /api/parameterize/heat     (direct)" << std::endl;
     std::cout << "    POST /api/parameterize/cgal     (direct)" << std::endl;
-    std::cout << "    POST /api/tessellate/step" << std::endl;
+    std::cout << "    POST /api/tessellate/step       (Gmsh default, OCC fallback)" << std::endl;
     std::cout << "    GET  /api/health" << std::endl;
     std::cout << "\nListening on http://localhost:" << port << std::endl;
 
