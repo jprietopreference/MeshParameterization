@@ -356,6 +356,40 @@ int main(int argc, char* argv[]) {
                         if (bot_param.has_normals()) combined.N.bottomRows(bnv) = bot_param.N;
                     }
 
+                    // Restore _FACE_ID and _SEAM from original mesh by position mapping
+                    if (orig_mesh.has_face_ids() || orig_mesh.has_seam()) {
+                        // Build position -> original vertex lookup
+                        std::unordered_map<std::array<int64_t,3>, int, V3Hash> orig_pos;
+                        for (int i = 0; i < orig_mesh.num_vertices(); i++) {
+                            std::array<int64_t,3> k = {
+                                (int64_t)std::round(orig_mesh.V(i,0)*1e4),
+                                (int64_t)std::round(orig_mesh.V(i,1)*1e4),
+                                (int64_t)std::round(orig_mesh.V(i,2)*1e4)};
+                            orig_pos[k] = i;
+                        }
+                        int total = tnv + bnv;
+                        if (orig_mesh.has_face_ids()) {
+                            combined.face_ids.resize(total);
+                            combined.face_ids.setConstant(-1);
+                        }
+                        if (orig_mesh.has_seam()) {
+                            combined.seam.resize(total);
+                            combined.seam.setZero();
+                        }
+                        for (int i = 0; i < total; i++) {
+                            std::array<int64_t,3> k = {
+                                (int64_t)std::round(combined.V(i,0)*1e4),
+                                (int64_t)std::round(combined.V(i,1)*1e4),
+                                (int64_t)std::round(combined.V(i,2)*1e4)};
+                            auto it = orig_pos.find(k);
+                            if (it != orig_pos.end()) {
+                                int oi = it->second;
+                                if (orig_mesh.has_face_ids()) combined.face_ids(i) = orig_mesh.face_ids(oi);
+                                if (orig_mesh.has_seam()) combined.seam(i) = orig_mesh.seam(oi);
+                            }
+                        }
+                    }
+
                     result = top_result; // metrics from top half (the important one)
                     result.glb = meshparam::save_gltf_to_memory(combined);
                     result.vertices = tnv + bnv;
