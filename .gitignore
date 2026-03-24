@@ -1,13 +1,36 @@
-benchmark/
-benchmark_results/
+# Build artifacts
 build/
 build_wasm/
+*/build/
 .cache/
+
+# IDE
 .vscode/
 *.swp
 *.user
 CMakeUserPresets.json
-scripts/__pycache__/
+
+# Python
+__pycache__/
+*.pyc
+
+# Node
+web/node_modules/
+
+# Test artifacts
+web/tests/
+web/test-results/
+
+# Benchmark data (too large for git)
+benchmark/
+benchmark_results/
+
+# Generated mesh data
+data/*_gmsh*.glb
+debug_eigen.obj
+cmake_options.texi
+
+# Extern: only src/ of CompMajor is tracked
 Spatial/
 extern/CompMajor/Matlab/
 extern/CompMajor/.git*
@@ -15,7 +38,6 @@ extern/CompMajor/CMakeLists.txt
 extern/CompMajor/README.md
 extern/flip-free-parametrization/
 extern/gmsh/
-cmake_options.texi
-debug_eigen.obj
-data/*_gmsh*.glb
-web/tests/
+
+# Stale CSS (ViewCube is now BabylonJS native)
+web/viewcube.css
