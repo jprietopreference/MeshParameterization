@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mesh Parameterization</title>
     <link rel="stylesheet" href="style.css">
+    <!-- viewcube is now BabylonJS native -->
 </head>
 <body>
     <div id="app">
@@ -122,6 +123,8 @@
 
         <main id="viewport">
             <canvas id="renderCanvas"></canvas>
+            <canvas id="vcCanvas" width="200" height="200" style="position:absolute;top:8px;right:8px;width:200px;height:200px;z-index:10;pointer-events:auto;background:transparent;"></canvas>
+            <div id="vcModeLabel" style="position:absolute;top:212px;right:8px;font:bold 11px Segoe UI,sans-serif;color:rgba(78,204,163,0.8);cursor:pointer;z-index:10;text-align:center;width:60px;">PERSP</div>
         </main>
     </div>
 

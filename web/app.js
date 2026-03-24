@@ -899,6 +899,317 @@ $('exportBtn').addEventListener('click', () => {
     a.click();
 });
 
+// ============================================================
+// ViewCube — BabylonJS on a separate overlay canvas
+// ============================================================
+
+class ViewCube {
+    constructor(mainScene) {
+        this.mainScene = mainScene;
+        this.camera = mainScene.activeCamera;
+        this.animating = false;
+        this.isOrtho = false;
+
+        // Create a separate engine on the overlay canvas
+        const vcCanvas = document.getElementById('vcCanvas');
+        this.vcEngine = new BABYLON.Engine(vcCanvas, true, { alpha: true });
+        this.vcScene = new BABYLON.Scene(this.vcEngine);
+        this.vcScene.clearColor = new BABYLON.Color4(0, 0, 0, 0); // transparent
+
+        // Orthographic camera
+        this.vcCamera = new BABYLON.ArcRotateCamera('vcCam', 0, 0, 5, BABYLON.Vector3.Zero(), this.vcScene);
+        this.vcCamera.mode = BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
+        this.vcCamera.orthoLeft = -1.5;
+        this.vcCamera.orthoRight = 1.5;
+        this.vcCamera.orthoTop = 1.5;
+        this.vcCamera.orthoBottom = -1.5;
+        this.vcCamera.inputs.clear();
+
+        // Light
+        const light = new BABYLON.HemisphericLight('vcLight', new BABYLON.Vector3(0.5, 1, 0.8), this.vcScene);
+        light.intensity = 1.0;
+        light.groundColor = new BABYLON.Color3(0.2, 0.25, 0.3);
+
+        this._buildCube();
+
+        // Render loop for the VC engine
+        this.vcEngine.runRenderLoop(() => {
+            this._syncCamera();
+            this.vcScene.render();
+        });
+
+        // Click handling directly on the VC canvas — no viewport mapping needed
+        vcCanvas.addEventListener('pointerdown', (evt) => this._handleClick(evt));
+
+        // ORTHO/PERSP label
+        document.getElementById('vcModeLabel')?.addEventListener('click', () => this.toggleProjection());
+
+        // Camera angle definitions
+        // ArcRotateCamera: alpha=0 → camera on +X axis, alpha=PI/2 → camera on +Z axis
+        // Front = looking at the Z+ face of the model → camera at +Z → alpha = PI/2
+        const PI = Math.PI;
+        this.views = {
+            // Faces
+            front:  { alpha: PI / 2,   beta: PI / 2 },   // camera at +Z
+            back:   { alpha: PI * 1.5, beta: PI / 2 },   // camera at -Z
+            top:    { alpha: PI / 2,   beta: 0.001 },     // camera above
+            bottom: { alpha: PI / 2,   beta: PI - 0.001 },// camera below
+            right:  { alpha: 0,        beta: PI / 2 },    // camera at +X
+            left:   { alpha: PI,       beta: PI / 2 },    // camera at -X
+            // Edges
+            'front-top':     { alpha: PI / 2,   beta: PI / 4 },
+            'front-bottom':  { alpha: PI / 2,   beta: PI * 3 / 4 },
+            'front-right':   { alpha: PI * 0.25, beta: PI / 2 },
+            'front-left':    { alpha: PI * 0.75, beta: PI / 2 },
+            'back-top':      { alpha: PI * 1.5, beta: PI / 4 },
+            'back-bottom':   { alpha: PI * 1.5, beta: PI * 3 / 4 },
+            'back-right':    { alpha: PI * 1.75, beta: PI / 2 },
+            'back-left':     { alpha: PI * 1.25, beta: PI / 2 },
+            'top-right':     { alpha: 0,         beta: PI / 4 },
+            'top-left':      { alpha: PI,        beta: PI / 4 },
+            'bottom-right':  { alpha: 0,         beta: PI * 3 / 4 },
+            'bottom-left':   { alpha: PI,        beta: PI * 3 / 4 },
+            // Corners (front = camera at +Z side)
+            'front-top-right':    { alpha: PI * 0.25, beta: PI / 4 },
+            'front-top-left':     { alpha: PI * 0.75, beta: PI / 4 },
+            'front-bottom-right': { alpha: PI * 0.25, beta: PI * 3 / 4 },
+            'front-bottom-left':  { alpha: PI * 0.75, beta: PI * 3 / 4 },
+            'back-top-right':     { alpha: PI * 1.75, beta: PI / 4 },
+            'back-top-left':      { alpha: PI * 1.25, beta: PI / 4 },
+            'back-bottom-right':  { alpha: PI * 1.75, beta: PI * 3 / 4 },
+            'back-bottom-left':   { alpha: PI * 1.25, beta: PI * 3 / 4 },
+        };
+    }
+
+    _buildCube() {
+        const S = 0.5; // half size
+
+        // Create 6 face planes using CreatePlane facing +Z, then rotate into position
+        // For faces where rotation mirrors the texture, flip scaling.x
+        // Build a single box and create 6 dynamic textures for its faces
+        // faceUV maps each box face to a specific region of a texture atlas
+        // Box face order in BabylonJS: 0=back(Z-), 1=front(Z+), 2=right(X+), 3=left(X-), 4=top(Y+), 5=bottom(Y-)
+        // Labels are SWAPPED: the Z- face of the cube shows "FRONT" because when
+        // the camera looks from +Z (front view), you see the Z- side of the cube.
+        const faceLabels = ['FRONT', 'BACK', 'RIGHT', 'LEFT', 'BOTTOM', 'TOP'];
+        const faceNames =  ['front', 'back', 'right', 'left', 'bottom', 'top'];
+
+        // Create a texture atlas: 6 labels in a 3x2 grid, each 128x128 → 384x256
+        const atlasW = 384, atlasH = 256, cellW = 128, cellH = 128;
+        const atlasTex = new BABYLON.DynamicTexture('vcAtlas', { width: atlasW, height: atlasH }, this.vcScene, false);
+        const ctx = atlasTex.getContext();
+
+        for (let i = 0; i < 6; i++) {
+            const col = i % 3, row = Math.floor(i / 3);
+            const ox = col * cellW, oy = row * cellH;
+            ctx.fillStyle = 'rgba(40, 70, 120, 0.9)';
+            ctx.fillRect(ox, oy, cellW, cellH);
+            ctx.strokeStyle = 'rgba(100, 160, 220, 0.8)';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(ox + 2, oy + 2, cellW - 4, cellH - 4);
+            ctx.font = 'bold 22px Segoe UI, sans-serif';
+            ctx.fillStyle = '#c0d8f0';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(faceLabels[i], ox + cellW/2, oy + cellH/2);
+        }
+        atlasTex.update();
+
+        // Map each face to its atlas cell
+        const faceUV = [];
+        for (let i = 0; i < 6; i++) {
+            const col = i % 3, row = Math.floor(i / 3);
+            const u0 = col * cellW / atlasW, u1 = (col + 1) * cellW / atlasW;
+            const v0 = 1 - (row + 1) * cellH / atlasH, v1 = 1 - row * cellH / atlasH;
+            faceUV.push(new BABYLON.Vector4(u0, v0, u1, v1));
+        }
+
+        const cube = BABYLON.MeshBuilder.CreateBox('vcCube', { size: 1, faceUV, wrap: true }, this.vcScene);
+        const cubeMat = new BABYLON.StandardMaterial('vcCubeMat', this.vcScene);
+        cubeMat.diffuseTexture = atlasTex;
+        cubeMat.emissiveColor = new BABYLON.Color3(0.15, 0.25, 0.4);
+        cubeMat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+        cube.material = cubeMat;
+        cube.metadata = { viewName: '__cube__' };
+        this.cubeMesh = cube;
+
+        // For picking individual faces, use faceId from the pick result
+        // BabylonJS box faceId: each face has 2 triangles, so faceId/2 gives the face index
+        // Face index: 0=back, 1=front, 2=right, 3=left, 4=top, 5=bottom
+        this.faceIndexToName = faceNames;
+
+        // Edge strips (thin boxes along cube edges)
+        this.edgeMeshes = {};
+        const ES = 0.08;
+        const edgeDefs = [
+            { name: 'front-top',    pos: [0, S, S],   scale: [1+ES, ES, ES] },
+            { name: 'front-bottom', pos: [0, -S, S],  scale: [1+ES, ES, ES] },
+            { name: 'front-left',   pos: [-S, 0, S],  scale: [ES, 1+ES, ES] },
+            { name: 'front-right',  pos: [S, 0, S],   scale: [ES, 1+ES, ES] },
+            { name: 'back-top',     pos: [0, S, -S],  scale: [1+ES, ES, ES] },
+            { name: 'back-bottom',  pos: [0, -S, -S], scale: [1+ES, ES, ES] },
+            { name: 'back-left',    pos: [-S, 0, -S], scale: [ES, 1+ES, ES] },
+            { name: 'back-right',   pos: [S, 0, -S],  scale: [ES, 1+ES, ES] },
+            { name: 'top-right',    pos: [S, S, 0],   scale: [ES, ES, 1+ES] },
+            { name: 'top-left',     pos: [-S, S, 0],  scale: [ES, ES, 1+ES] },
+            { name: 'bottom-right', pos: [S, -S, 0],  scale: [ES, ES, 1+ES] },
+            { name: 'bottom-left',  pos: [-S, -S, 0], scale: [ES, ES, 1+ES] },
+        ];
+
+        const edgeMat = new BABYLON.StandardMaterial('vcEdgeMat', this.vcScene);
+        edgeMat.diffuseColor = new BABYLON.Color3(0.3, 0.5, 0.7);
+        edgeMat.emissiveColor = new BABYLON.Color3(0.15, 0.3, 0.5);
+        edgeMat.specularColor = BABYLON.Color3.Black();
+
+        for (const ed of edgeDefs) {
+            const box = BABYLON.MeshBuilder.CreateBox(`vcE_${ed.name}`, { size: 1 }, this.vcScene);
+            box.position = new BABYLON.Vector3(...ed.pos);
+            box.scaling = new BABYLON.Vector3(...ed.scale);
+            box.material = edgeMat;
+            box.metadata = { viewName: ed.name };
+            this.edgeMeshes[ed.name] = box;
+        }
+
+        // Corner spheres
+        this.cornerMeshes = {};
+        const CS = 0.12;
+        const cornerMat = new BABYLON.StandardMaterial('vcCornerMat', this.vcScene);
+        cornerMat.diffuseColor = new BABYLON.Color3(0.35, 0.55, 0.75);
+        cornerMat.emissiveColor = new BABYLON.Color3(0.2, 0.35, 0.55);
+        cornerMat.specularColor = BABYLON.Color3.Black();
+
+        for (const sx of [-1, 1]) {
+            for (const sy of [-1, 1]) {
+                for (const sz of [-1, 1]) {
+                    const fname = (sz > 0 ? 'front' : 'back') + '-' +
+                                  (sy > 0 ? 'top' : 'bottom') + '-' +
+                                  (sx > 0 ? 'right' : 'left');
+                    const sph = BABYLON.MeshBuilder.CreateSphere(`vcC_${fname}`, { diameter: CS * 2, segments: 6 }, this.vcScene);
+                    sph.position = new BABYLON.Vector3(sx * S, sy * S, sz * S);
+                    sph.material = cornerMat;
+                    sph.metadata = { viewName: fname };
+                    this.cornerMeshes[fname] = sph;
+                }
+            }
+        }
+    }
+
+    _syncCamera() {
+        if (!this.camera) this.camera = this.mainScene.activeCamera;
+        if (!this.camera) return;
+        this.vcCamera.alpha = this.camera.alpha;
+        this.vcCamera.beta = this.camera.beta;
+        if (this.isOrtho) this._updateOrthoFrustum();
+    }
+
+    _handleClick(evt) {
+        // Coordinates are local to the vcCanvas
+        const pick = this.vcScene.pick(evt.offsetX, evt.offsetY);
+        if (!pick.hit || !pick.pickedMesh) return;
+
+        let viewName = null;
+        if (pick.pickedMesh === this.cubeMesh && pick.faceId != null) {
+            // Box face: faceId is the triangle index, /2 gives the face index
+            const faceIdx = Math.floor(pick.faceId / 2);
+            viewName = this.faceIndexToName[faceIdx];
+        } else if (pick.pickedMesh.metadata?.viewName) {
+            // Edge or corner mesh
+            viewName = pick.pickedMesh.metadata.viewName;
+        }
+        if (viewName && this.views[viewName]) {
+            this._animateTo(this.views[viewName].alpha, this.views[viewName].beta, viewName);
+        }
+    }
+
+    _animateTo(targetAlpha, targetBeta, viewName) {
+        if (this.animating) return;
+        this.animating = true;
+
+        const cam = this.camera;
+        if (!cam) { this.animating = false; return; }
+
+        if (!this.isOrtho) this._setOrthoProjection(true);
+
+        const startAlpha = cam.alpha;
+        const startBeta = cam.beta;
+        const duration = 500;
+        const startTime = performance.now();
+
+        let da = targetAlpha - startAlpha;
+        while (da > Math.PI) da -= Math.PI * 2;
+        while (da < -Math.PI) da += Math.PI * 2;
+        const resolvedTargetAlpha = startAlpha + da;
+
+        const easeInOut = t => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+        const animate = () => {
+            const elapsed = performance.now() - startTime;
+            const t = Math.min(elapsed / duration, 1);
+            const et = easeInOut(t);
+            cam.alpha = startAlpha + (resolvedTargetAlpha - startAlpha) * et;
+            cam.beta = startBeta + (targetBeta - startBeta) * et;
+            if (this.isOrtho) this._updateOrthoFrustum();
+            if (t < 1) {
+                requestAnimationFrame(animate);
+            } else {
+                cam.alpha = ((resolvedTargetAlpha % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+                cam.beta = targetBeta;
+                this.animating = false;
+            }
+        };
+        requestAnimationFrame(animate);
+    }
+
+    toggleProjection() {
+        this._setOrthoProjection(!this.isOrtho);
+    }
+
+    _setOrthoProjection(ortho) {
+        const cam = this.camera;
+        if (!cam) return;
+        if (ortho) {
+            cam.mode = BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
+            this._updateOrthoFrustum();
+            this.isOrtho = true;
+        } else {
+            cam.mode = BABYLON.Camera.PERSPECTIVE_CAMERA;
+            this.isOrtho = false;
+        }
+        const label = document.getElementById('vcModeLabel');
+        if (label) label.textContent = this.isOrtho ? 'ORTHO' : 'PERSP';
+    }
+
+    _updateOrthoFrustum() {
+        const cam = this.camera;
+        if (!cam || cam.mode !== BABYLON.Camera.ORTHOGRAPHIC_CAMERA) return;
+        const canvas = this.mainScene.getEngine().getRenderingCanvas();
+        if (!canvas) return;
+        const aspect = canvas.width / canvas.height;
+        const halfHeight = cam.radius * 0.5;
+        cam.orthoLeft = -halfHeight * aspect;
+        cam.orthoRight = halfHeight * aspect;
+        cam.orthoTop = halfHeight;
+        cam.orthoBottom = -halfHeight;
+    }
+
+    onCameraChange() {
+        if (this.isOrtho) this._updateOrthoFrustum();
+    }
+}
+
+// Global ViewCube instance
+let viewCube = null;
+
+function initViewCube() {
+    if (!scene || !scene.activeCamera) return;
+    viewCube = new ViewCube(scene);
+
+    // Also update ortho frustum on zoom (radius change)
+    scene.registerBeforeRender(() => {
+        if (viewCube) viewCube.onCameraChange();
+    });
+}
+
 // --- Init ---
 (async () => {
     try {
@@ -907,4 +1218,6 @@ $('exportBtn').addEventListener('click', () => {
     } catch (e) {
         setStatus('Server not available at ' + API, 'error');
     }
+    // Initialize ViewCube after scene is ready
+    initViewCube();
 })();
