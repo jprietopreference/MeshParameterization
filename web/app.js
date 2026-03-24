@@ -60,6 +60,7 @@ function clearMetrics() {
 }
 
 let lastGlbBuffer = null; // keep for custom attr injection
+let lastEdgeLines = null; // cached B-Rep edge lines from pipeline
 async function loadGlb(glbBuffer, applyChecker = false) {
     lastGlbBuffer = glbBuffer;
     if (scene) scene.meshes.slice().forEach(m => m.dispose());
@@ -82,15 +83,18 @@ async function loadGlb(glbBuffer, applyChecker = false) {
             scene.activeCamera.target = center;
             scene.activeCamera.radius = extent * 1.5;
             new BABYLON.AxesViewer(scene, extent > 10 ? 20 : extent * 0.2);
-            // Find all renderable meshes (primitives become separate meshes in BabylonJS)
+            // Find all renderable meshes
             const renderMeshes = container.meshes.filter(m => m.getTotalVertices() > 0);
             currentMesh = renderMeshes[0] || container.meshes[0];
 
-            // Inject custom attributes and disable backface culling on all meshes
+            // Inject custom attributes and disable backface culling
             for (const mesh of renderMeshes) {
                 if (lastGlbBuffer) injectCustomAttrs(mesh, lastGlbBuffer);
                 if (mesh.material) mesh.material.backFaceCulling = false;
             }
+
+            // Draw B-Rep edge lines from glTF node extras
+            drawEdgeLinesFromExtras(container);
 
             if (applyChecker) {
                 // After parameterization: apply checkerboard per primitive
@@ -113,8 +117,6 @@ async function loadGlb(glbBuffer, applyChecker = false) {
             }
 
             if (currentMesh) showMeshQuality(currentMesh);
-            // Auto-show color-coded B-Rep edges on ALL render meshes
-            for (const mesh of renderMeshes) showColorCodedEdges(mesh);
         }
     } finally { URL.revokeObjectURL(url); }
 }
@@ -293,7 +295,7 @@ $('fileInput').addEventListener('change', async (e) => {
         $('metricsPanel').style.display = 'block';
         $('comparisonPanel').style.display = 'none';
         $('exportPanel').style.display = 'none';
-        // Face edges are now auto-shown via showColorCodedEdges in loadGlb
+        // Face edges are now auto-shown via line primitives in loadGlb
         if ($('showFaceEdges')) {
             $('showFaceEdges').checked = currentMesh?.getVerticesData('_FACE_ID') != null;
         }
@@ -414,7 +416,7 @@ $('paramBtn').addEventListener('click', async () => {
 
         // Build seam lines from UV discontinuities (light blue)
         if (currentMesh && $('showSeams')?.checked) {
-            showSeamLines(currentMesh);
+            showSeamLines();
         }
 
         $('viewPanel').style.display = 'block';
@@ -454,7 +456,7 @@ async function loadMethodResult(session, methodName) {
             } catch (e) {}
         }
 
-        if ($('showSeams')?.checked && currentMesh) showSeamLines(currentMesh);
+        if ($('showSeams')?.checked && currentMesh) showSeamLines();
         setStatus(`Viewing: ${methodName}`, '');
     } catch (err) {
         setStatus(`Error: ${err.message}`, 'error');
@@ -604,7 +606,7 @@ function injectCustomAttrs(mesh, glbBuffer) {
         while (binStart % 4) binStart++;
         binStart += 8;
 
-        for (const attrName of ['_SEAM', '_FACE_ID', '_EDGE_TYPE']) {
+        for (const attrName of ['_SEAM', '_FACE_ID']) {
             const accIdx = prim.attributes[attrName];
             if (accIdx == null) continue;
             const acc = json.accessors[accIdx];
@@ -623,107 +625,100 @@ function injectCustomAttrs(mesh, glbBuffer) {
     }
 }
 
-function showSeamLines(mesh) {
-    // Seam = thick transparent blue on seam vertices (_SEAM > 0.5)
+function showSeamLines() {
+    // Seam = thick transparent blue, using edgeLines.seam from cached extras
     scene.meshes.filter(m => m.name === '_seam_lines').forEach(m => m.dispose());
-    if (!mesh) return;
-    const positions = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
-    const indices = mesh.getIndices();
-    const seamData = mesh.getVerticesData('_SEAM');
-    if (!positions || !indices || !seamData) return;
+    if (!lastEdgeLines || !lastEdgeLines.seam) return;
 
-    const linePoints = [];
-    for (let t = 0; t < indices.length; t += 3) {
-        for (let e = 0; e < 3; e++) {
-            const a = indices[t + e], b = indices[t + (e + 1) % 3];
-            if (seamData[a] > 0.5 && seamData[b] > 0.5) {
-                linePoints.push(
-                    new BABYLON.Vector3(positions[a*3], positions[a*3+1], positions[a*3+2]),
-                    new BABYLON.Vector3(positions[b*3], positions[b*3+1], positions[b*3+2]),
-                );
-            }
-        }
+    const pts = lastEdgeLines.seam;
+    const lines = [];
+    for (let i = 0; i < pts.length; i += 6) {
+        lines.push([
+            new BABYLON.Vector3(pts[i], pts[i+1], pts[i+2]),
+            new BABYLON.Vector3(pts[i+3], pts[i+4], pts[i+5]),
+        ]);
     }
-    if (linePoints.length > 0) {
-        const lines = BABYLON.MeshBuilder.CreateLineSystem('_seam_lines', {
-            lines: Array.from({length: linePoints.length / 2}, (_, i) =>
-                [linePoints[i * 2], linePoints[i * 2 + 1]]),
-        }, scene);
-        lines.color = new BABYLON.Color3(0.3, 0.6, 1.0);
-        lines.alpha = 0.6;
-        lines.isPickable = false;
-        lines.parent = mesh.parent || mesh;
-        // Make thicker by enabling edge rendering
-        lines.enableEdgesRendering();
-        lines.edgesWidth = 4.0;
-        lines.edgesColor = new BABYLON.Color4(0.3, 0.6, 1.0, 0.6);
+    if (lines.length > 0) {
+        const lineSys = BABYLON.MeshBuilder.CreateLineSystem('_seam_lines', { lines }, scene);
+        lineSys.color = new BABYLON.Color3(0.3, 0.6, 1.0);
+        lineSys.alpha = 0.6;
+        lineSys.isPickable = false;
+        lineSys.material.zOffset = -2;
+        lineSys.enableEdgesRendering();
+        lineSys.edgesWidth = 4.0;
+        lineSys.edgesColor = new BABYLON.Color4(0.3, 0.6, 1.0, 0.6);
     }
 }
 
-// Color-coded B-Rep edges from OCC _EDGE_TYPE attribute:
-// 1=seam (red), 2=Z-perp (orange), 3=other B-Rep (yellow)
-function showColorCodedEdges(mesh) {
-    // Dispose old overlays
-    for (const name of ['_edges_red', '_edges_orange', '_edges_yellow'])
-        scene.meshes.filter(m => m.name === name).forEach(m => m.dispose());
+// Draw B-Rep edge lines from glTF node extras (edgeLines: {seam, zperp, other})
+function drawEdgeLinesFromExtras(container) {
+    // Dispose old edge overlays
+    for (const n of ['_edges_seam', '_edges_zperp', '_edges_other'])
+        scene.meshes.filter(m => m.name === n).forEach(m => m.dispose());
 
-    if (!mesh) return;
-    const positions = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
-    const indices = mesh.getIndices();
-    const edgeTypeData = mesh.getVerticesData('_EDGE_TYPE');
-    if (!positions || !indices || !edgeTypeData) return;
-
-    // _EDGE_TYPE encodes: type*10000 + occ_edge_id (0 = interior)
-    // Draw edges where both vertices share the SAME OCC edge ID
-    const redPts = [], orangePts = [], yellowPts = [];
-    const seen = new Set();
-
-    for (let t = 0; t < indices.length; t += 3) {
-        for (let e = 0; e < 3; e++) {
-            const a = indices[t + e], b = indices[t + (e + 1) % 3];
-            const va = edgeTypeData[a], vb = edgeTypeData[b];
-            if (va < 0.5 || vb < 0.5) continue; // interior vertex
-
-            const eid_a = Math.round(va) % 10000;
-            const eid_b = Math.round(vb) % 10000;
-            // Match if same edge ID, or either is 9999 (junction wildcard)
-            if (eid_a !== eid_b && eid_a !== 9999 && eid_b !== 9999) continue;
-
-            const type_a = Math.floor(Math.round(va) / 10000);
-            const type_b = Math.floor(Math.round(vb) / 10000);
-            const etype = Math.min(type_a, type_b);
-
-            const key = a < b ? `${a}_${b}` : `${b}_${a}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-
-            const pts = etype === 1 ? redPts : etype === 2 ? orangePts : yellowPts;
-            pts.push(
-                new BABYLON.Vector3(positions[a*3], positions[a*3+1], positions[a*3+2]),
-                new BABYLON.Vector3(positions[b*3], positions[b*3+1], positions[b*3+2]),
-            );
+    // Find edgeLines in node extras (BabylonJS stores them on transformNodes or meshes)
+    let edgeLines = null;
+    // Check all transform nodes
+    for (const tn of (container.transformNodes || [])) {
+        edgeLines = tn.metadata?.gltf?.extras?.edgeLines;
+        if (edgeLines) break;
+    }
+    // Fallback: check meshes
+    if (!edgeLines) {
+        for (const m of (container.meshes || [])) {
+            edgeLines = m.metadata?.gltf?.extras?.edgeLines;
+            if (edgeLines) break;
         }
     }
+    // Fallback: parse from raw GLB JSON
+    if (!edgeLines && lastGlbBuffer) {
+        try {
+            const dv = new DataView(lastGlbBuffer.buffer || lastGlbBuffer);
+            const jsonLen = dv.getUint32(12, true);
+            const jsonStr = new TextDecoder().decode(new Uint8Array(lastGlbBuffer.buffer || lastGlbBuffer, 20, jsonLen));
+            const gltf = JSON.parse(jsonStr);
+            edgeLines = gltf.nodes?.[0]?.extras?.edgeLines;
+        } catch(e) { console.warn('[edges] Failed to parse GLB JSON:', e); }
+    }
+    if (edgeLines) {
+        // Cache for reuse after parameterization
+        lastEdgeLines = edgeLines;
+    } else if (lastEdgeLines) {
+        // Reuse cached edge lines (e.g. after parameterization)
+        edgeLines = lastEdgeLines;
+    } else {
+        console.log('[edges] No edgeLines found');
+        return;
+    }
 
-    const drawLines = (name, pts, color) => {
-        if (pts.length === 0) return;
-        const lines = BABYLON.MeshBuilder.CreateLineSystem(name, {
-            lines: Array.from({length: pts.length / 2}, (_, i) => [pts[i*2], pts[i*2+1]]),
-        }, scene);
-        lines.color = color;
-        lines.isPickable = false;
-        lines.parent = mesh.parent || mesh;
+    const colorMap = {
+        seam:   new BABYLON.Color3(1.0, 0.1, 0.1),  // red
+        zperp:  new BABYLON.Color3(1.0, 0.6, 0.2),  // orange
+        other:  new BABYLON.Color3(1.0, 0.9, 0.2),  // yellow
     };
 
-    drawLines('_edges_yellow', yellowPts, new BABYLON.Color3(1.0, 0.9, 0.2));
-    drawLines('_edges_orange', orangePts, new BABYLON.Color3(1.0, 0.6, 0.2));
-    drawLines('_edges_red', redPts, new BABYLON.Color3(1.0, 0.1, 0.1));
-
-    console.log(`[edges] red=${redPts.length/2} orange=${orangePts.length/2} yellow=${yellowPts.length/2}`);
+    for (const [key, pts] of Object.entries(edgeLines)) {
+        if (!pts || pts.length < 6) continue;
+        const lines = [];
+        for (let i = 0; i < pts.length; i += 6) {
+            lines.push([
+                new BABYLON.Vector3(pts[i], pts[i+1], pts[i+2]),
+                new BABYLON.Vector3(pts[i+3], pts[i+4], pts[i+5]),
+            ]);
+        }
+        const lineSys = BABYLON.MeshBuilder.CreateLineSystem(`_edges_${key}`, { lines }, scene);
+        lineSys.color = colorMap[key] || new BABYLON.Color3(1, 1, 1);
+        lineSys.isPickable = false;
+        // Depth bias: rendered slightly in front to avoid Z-fighting but still occluded
+        lineSys.material.zOffset = -2;
+        console.log(`[edges] ${key}: ${lines.length} segments`);
+    }
 }
 
-function showFaceEdges(mesh) {
-    showColorCodedEdges(mesh);
+function showFaceEdges() {
+    const show = $('showFaceEdges')?.checked ?? true;
+    for (const n of ['_edges_seam', '_edges_zperp', '_edges_other'])
+        scene?.meshes.filter(m => m.name === n).forEach(m => { m.isVisible = show; });
 }
 
 // Legacy Z-loop function (replaced by color-coded edges)
@@ -885,19 +880,14 @@ $('showWireframe').addEventListener('change', () => {
 
 $('showSeams')?.addEventListener('change', () => {
     if ($('showSeams').checked) {
-        if (currentMesh) showSeamLines(currentMesh);
+        if (currentMesh) showSeamLines();
     } else {
         scene?.meshes.filter(m => m.name === '_seam_lines').forEach(m => m.dispose());
     }
 });
 
 $('showFaceEdges')?.addEventListener('change', () => {
-    if ($('showFaceEdges').checked) {
-        if (currentMesh) showColorCodedEdges(currentMesh);
-    } else {
-        for (const n of ['_edges_red', '_edges_orange', '_edges_yellow'])
-            scene?.meshes.filter(m => m.name === n).forEach(m => m.dispose());
-    }
+    showFaceEdges(currentMesh);
 });
 
 // --- Export ---

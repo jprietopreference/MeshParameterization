@@ -395,12 +395,22 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
             pass
 
     # Build ordered node lists per OCC edge for the GLB
-    # This allows the frontend to draw each B-Rep edge as a polyline
-    edge_node_lists = {}  # occ_edge_tag -> [node_tags in order]
+    # Nodes are sorted by parametric coordinate along the edge curve
+    edge_node_lists = {}  # occ_edge_tag -> [node_tags in order along curve]
+    edge_node_coords = {}  # occ_edge_tag -> {node_tag: (x,y,z)}
     for _, tag_e in all_brep_edges_for_classify:
         try:
-            ntags, coords, _ = gmsh.model.mesh.getNodes(1, tag_e, includeBoundary=True)
-            edge_node_lists[tag_e] = [int(nt) for nt in ntags]
+            ntags, coords, params = gmsh.model.mesh.getNodes(1, tag_e, includeBoundary=True)
+            if len(ntags) < 2:
+                continue
+            # Sort by parametric coordinate
+            order = sorted(range(len(ntags)), key=lambda i: params[i])
+            edge_node_lists[tag_e] = [int(ntags[i]) for i in order]
+            # Store coordinates keyed by node tag
+            node_coords = {}
+            for i in range(len(ntags)):
+                node_coords[int(ntags[i])] = (coords[i*3], coords[i*3+1], coords[i*3+2])
+            edge_node_coords[tag_e] = node_coords
         except:
             pass
 
@@ -413,9 +423,12 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
     # 6. Extract mesh per face group (top/bottom if seam found, else all together)
     surfaces = gmsh.model.getEntities(dim=2)
 
+    # Global map: gmsh node tag -> GLB vertex index (filled during extraction)
+    global_node_to_glb = {}
+
     def extract_faces(face_tags_filter=None):
         """Extract mesh from a subset of OCC faces. Returns verts, normals, face_ids, seam, edge_type, tris."""
-        verts, normals, face_ids, seam_flags, edge_types, tris = [], [], [], [], [], []
+        verts, normals, face_ids, seam_flags, tris = [], [], [], [], []
         for face_idx, (dim, tag) in enumerate(surfaces):
             if face_tags_filter is not None and tag not in face_tags_filter:
                 continue
@@ -435,6 +448,7 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
             for i, nt in enumerate(node_tags):
                 local_idx = base + i
                 tag_to_local[int(nt)] = local_idx
+                global_node_to_glb[int(nt)] = local_idx  # track for line primitives
                 verts.extend([coords[i*3]*scale, coords[i*3+1]*scale, coords[i*3+2]*scale])
                 u, v = param_coords[i*2], param_coords[i*2+1]
                 try:
@@ -446,33 +460,19 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
                     normals.extend([0, 0, 1])
                 face_ids.append(float(face_idx))
                 seam_flags.append(1.0 if int(nt) in seam_node_tags else 0.0)
-                # _EDGE_TYPE encodes: type*10000 + edge_id
-                # Junction vertices (on 2+ edges) get edge_id = 9999 (wildcard)
-                nt_int = int(nt)
-                if nt_int in node_edge_ids:
-                    eids = node_edge_ids[nt_int]
-                    best_type = node_edge_type.get(nt_int, 0)
-                    if len(eids) > 1:
-                        # Junction — wildcard ID, matches any adjacent edge
-                        edge_types.append(float(best_type * 10000 + 9999))
-                    else:
-                        eid = next(iter(eids))
-                        edge_types.append(float(best_type * 10000 + eid))
-                else:
-                    edge_types.append(0.0)  # interior
             for i in range(0, len(tri_node_tags), 3):
                 n0, n1, n2 = int(tri_node_tags[i]), int(tri_node_tags[i+1]), int(tri_node_tags[i+2])
                 if n0 in tag_to_local and n1 in tag_to_local and n2 in tag_to_local:
                     tris.extend([tag_to_local[n0], tag_to_local[n1], tag_to_local[n2]])
-        return verts, normals, face_ids, seam_flags, edge_types, tris
+        return verts, normals, face_ids, seam_flags, tris
 
     # Determine if we split into two primitives or use one
     has_split = bool(seam_edge_tags) and bool(top_face_tags) and bool(bot_face_tags)
     if has_split:
         top_data = extract_faces(top_face_tags)
         bot_data = extract_faces(bot_face_tags)
-        print(f"[pipeline] Top: {len(top_data[0])//3}v {len(top_data[5])//3}f, "
-              f"Bottom: {len(bot_data[0])//3}v {len(bot_data[5])//3}f")
+        print(f"[pipeline] Top: {len(top_data[0])//3}v {len(top_data[4])//3}f, "
+              f"Bottom: {len(bot_data[0])//3}v {len(bot_data[4])//3}f")
     else:
         top_data = extract_faces(None)
         bot_data = None
@@ -482,28 +482,26 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
     all_normals = top_data[1]
     all_face_ids = top_data[2]
     all_seam = top_data[3]
-    all_edge_types = top_data[4]
-    all_tris = top_data[5]
+    all_tris = top_data[4]
 
     gmsh.finalize()
 
     def write_glb(path, parts):
-        """Write GLB with one mesh containing one or two primitives.
-        parts = [(verts, normals, face_ids, seam, edge_types, tris), ...]
+        """Write GLB with triangle primitives + line primitives for B-Rep edges.
+        parts = [(verts, normals, face_ids, seam, tris), ...]
         """
         # Concatenate all vertex data
-        all_v, all_n, all_fid, all_s, all_et = [], [], [], [], []
+        all_v, all_n, all_fid, all_s = [], [], [], []
         part_offsets = []  # (vert_offset, num_verts, num_tris) per part
         all_idx_parts = []
         vert_offset = 0
-        for verts, normals, face_ids, seam_flags, edge_types, tris in parts:
+        for verts, normals, face_ids, seam_flags, tris in parts:
             nv_part = len(verts) // 3
             nf_part = len(tris) // 3
             all_v.extend(verts)
             all_n.extend(normals)
             all_fid.extend(face_ids)
             all_s.extend(seam_flags)
-            all_et.extend(edge_types)
             # Offset indices by accumulated vertex count
             all_idx_parts.append(np.array(tris, dtype=np.uint32) + vert_offset)
             part_offsets.append((vert_offset, nv_part, nf_part))
@@ -518,19 +516,35 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
         N = np.array(all_n, dtype=np.float32)
         FID = np.array(all_fid, dtype=np.float32)
         SEAM = np.array(all_s, dtype=np.float32)
-        ET = np.array(all_et, dtype=np.float32)
 
         pos_data = V.tobytes()
         nrm_data = N.tobytes()
         fid_data = FID.tobytes()
         seam_data = SEAM.tobytes()
-        et_data = ET.tobytes()
 
-        # Index buffers per part
+        # Build edge line data as JSON extras (BabylonJS doesn't handle line primitives well)
+        # Use positions from edge_node_coords (captured from Gmsh before finalize)
+        edge_lines = {}  # "seam" / "zperp" / "other" -> [x,y,z,x,y,z,...]
+        etype_keys = {1: "seam", 2: "zperp", 3: "other"}
+        for etype in [1, 2, 3]:
+            pts = []
+            for occ_tag, node_list in edge_node_lists.items():
+                if edge_type_map.get(occ_tag, 3) != etype:
+                    continue
+                coords = edge_node_coords[occ_tag]
+                for i in range(len(node_list) - 1):
+                    pa = coords[node_list[i]]
+                    pb = coords[node_list[i + 1]]
+                    pts.extend([round(pa[0]*scale,4), round(pa[1]*scale,4), round(pa[2]*scale,4),
+                                round(pb[0]*scale,4), round(pb[1]*scale,4), round(pb[2]*scale,4)])
+            if pts:
+                edge_lines[etype_keys[etype]] = pts
+
+        # Index buffers per triangle part
         idx_datas = [p.tobytes() for p in all_idx_parts]
 
-        # Build buffer: pos + nrm + fid + seam + edge_type + idx0 [+ idx1]
-        buf = pos_data + nrm_data + fid_data + seam_data + et_data
+        # Build buffer: pos + nrm + fid + seam + tri_idx0 [+ tri_idx1]
+        buf = pos_data + nrm_data + fid_data + seam_data
         for idata in idx_datas:
             buf += idata
         while len(buf) % 4:
@@ -542,26 +556,23 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
         nrm_off = len(pos_data)
         fid_off = nrm_off + len(nrm_data)
         seam_off = fid_off + len(fid_data)
-        et_off = seam_off + len(seam_data)
 
-        # Shared vertex attributes: accessors 0-4
+        # Shared vertex attributes: accessors 0-3
         accessors = [
             {"bufferView": 0, "componentType": 5126, "count": total_nv, "type": "VEC3", "min": mn, "max": mx},
             {"bufferView": 1, "componentType": 5126, "count": total_nv, "type": "VEC3"},
             {"bufferView": 2, "componentType": 5126, "count": total_nv, "type": "SCALAR"},
             {"bufferView": 3, "componentType": 5126, "count": total_nv, "type": "SCALAR"},
-            {"bufferView": 4, "componentType": 5126, "count": total_nv, "type": "SCALAR"},
         ]
         buffer_views = [
             {"buffer": 0, "byteOffset": 0, "byteLength": len(pos_data), "target": 34962},
             {"buffer": 0, "byteOffset": nrm_off, "byteLength": len(nrm_data), "target": 34962},
             {"buffer": 0, "byteOffset": fid_off, "byteLength": len(fid_data), "target": 34962},
             {"buffer": 0, "byteOffset": seam_off, "byteLength": len(seam_data), "target": 34962},
-            {"buffer": 0, "byteOffset": et_off, "byteLength": len(et_data), "target": 34962},
         ]
 
-        # Per-part index buffers + primitives
-        idx_base_off = et_off + len(et_data)
+        # Per-part triangle index buffers
+        idx_base_off = seam_off + len(seam_data)
         primitives = []
         for pi, (vo, nv_p, nf_p) in enumerate(part_offsets):
             acc_idx = len(accessors)
@@ -573,18 +584,24 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
                 "bufferView": bv_idx, "componentType": 5125, "count": nf_p * 3, "type": "SCALAR"
             })
             primitives.append({
-                "attributes": {"POSITION": 0, "NORMAL": 1, "_FACE_ID": 2, "_SEAM": 3, "_EDGE_TYPE": 4},
+                "attributes": {"POSITION": 0, "NORMAL": 1, "_FACE_ID": 2, "_SEAM": 3},
                 "indices": acc_idx, "mode": 4
             })
             idx_base_off += len(idx_datas[pi])
 
         total_nf = sum(po[2] for po in part_offsets)
+        n_edge_segs = sum(len(v)//6 for v in edge_lines.values())
         print(f"[pipeline] Mesh: {total_nv} vertices, {total_nf} triangles, "
-              f"{len(primitives)} primitive(s), {len(surfaces)} OCC faces")
+              f"{len(primitives)} primitive(s), {n_edge_segs} edge segments, {len(surfaces)} OCC faces")
+
+        # Store B-Rep edge lines as extras on the node
+        node = {"mesh": 0}
+        if edge_lines:
+            node["extras"] = {"edgeLines": edge_lines}
 
         gltf = json.dumps({
             "asset": {"version": "2.0", "generator": "occ_gmsh_pipeline"},
-            "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}],
+            "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [node],
             "meshes": [{"primitives": primitives}],
             "accessors": accessors,
             "bufferViews": buffer_views,
