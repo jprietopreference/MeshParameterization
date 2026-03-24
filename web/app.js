@@ -61,6 +61,7 @@ function clearMetrics() {
 
 let lastGlbBuffer = null; // keep for custom attr injection
 let lastEdgeLines = null; // cached B-Rep edge lines from pipeline
+let lastGlTFRoot = null;  // cached glTF root node for edge line parenting
 async function loadGlb(glbBuffer, applyChecker = false) {
     lastGlbBuffer = glbBuffer;
     if (scene) scene.meshes.slice().forEach(m => m.dispose());
@@ -94,7 +95,9 @@ async function loadGlb(glbBuffer, applyChecker = false) {
             }
 
             // Draw B-Rep edge lines from glTF node extras
-            drawEdgeLinesFromExtras(container);
+            // Parent edge lines to the glTF root node so they inherit its transform (Z-flip for LH)
+            const glTFRoot = renderMeshes[0]?.parent || null;
+            drawEdgeLinesFromExtras(container, glTFRoot);
 
             if (applyChecker) {
                 // After parameterization: apply checkerboard per primitive
@@ -644,6 +647,7 @@ function showSeamLines() {
         lineSys.alpha = 0.6;
         lineSys.isPickable = false;
         lineSys.material.zOffset = -2;
+        if (lastGlTFRoot) lineSys.parent = lastGlTFRoot;
         lineSys.enableEdgesRendering();
         lineSys.edgesWidth = 4.0;
         lineSys.edgesColor = new BABYLON.Color4(0.3, 0.6, 1.0, 0.6);
@@ -651,7 +655,7 @@ function showSeamLines() {
 }
 
 // Draw B-Rep edge lines from glTF node extras (edgeLines: {seam, zperp, other})
-function drawEdgeLinesFromExtras(container) {
+function drawEdgeLinesFromExtras(container, parentNode) {
     // Dispose old edge overlays
     for (const n of ['_edges_seam', '_edges_zperp', '_edges_other'])
         scene.meshes.filter(m => m.name === n).forEach(m => m.dispose());
@@ -683,6 +687,7 @@ function drawEdgeLinesFromExtras(container) {
     if (edgeLines) {
         // Cache for reuse after parameterization
         lastEdgeLines = edgeLines;
+        if (parentNode) lastGlTFRoot = parentNode;
     } else if (lastEdgeLines) {
         // Reuse cached edge lines (e.g. after parameterization)
         edgeLines = lastEdgeLines;
@@ -709,8 +714,9 @@ function drawEdgeLinesFromExtras(container) {
         const lineSys = BABYLON.MeshBuilder.CreateLineSystem(`_edges_${key}`, { lines }, scene);
         lineSys.color = colorMap[key] || new BABYLON.Color3(1, 1, 1);
         lineSys.isPickable = false;
-        // Depth bias: rendered slightly in front to avoid Z-fighting but still occluded
         lineSys.material.zOffset = -2;
+        // Parent to glTF root so edge lines inherit the same transform (LH Z-flip)
+        if (parentNode) lineSys.parent = parentNode;
         console.log(`[edges] ${key}: ${lines.length} segments`);
     }
 }
@@ -991,8 +997,8 @@ class ViewCube {
         // Box face order in BabylonJS: 0=back(Z-), 1=front(Z+), 2=right(X+), 3=left(X-), 4=top(Y+), 5=bottom(Y-)
         // Labels are SWAPPED: the Z- face of the cube shows "FRONT" because when
         // the camera looks from +Z (front view), you see the Z- side of the cube.
-        const faceLabels = ['FRONT', 'BACK', 'RIGHT', 'LEFT', 'BOTTOM', 'TOP'];
-        const faceNames =  ['front', 'back', 'right', 'left', 'bottom', 'top'];
+        const faceLabels = ['FRONT', 'BACK', 'RIGHT', 'LEFT', 'TOP', 'BOTTOM'];
+        const faceNames =  ['front', 'back', 'right', 'left', 'top', 'bottom'];
 
         // Create a texture atlas: 6 labels in a 3x2 grid, each 128x128 → 384x256
         const atlasW = 384, atlasH = 256, cellW = 128, cellH = 128;
