@@ -2,65 +2,96 @@
 
 ## Project Overview
 
-UV parameterization of triangle meshes from glTF input, targeting both native (C++) and browser (WASM) builds. Based on the paper "Quasi-Isometric Mesh Parameterization Using Heat-Based Geodesics and Poisson Surface Fills" (Mejia-Parra et al., Mathematics 2019).
+UV parameterization of triangle meshes from STEP/glTF input, targeting both native (C++) and browser (WASM) builds. Broker architecture: 8 parameterization methods compete, best result selected automatically by Symmetric Dirichlet energy + flip count.
 
-**Preferred approach: Heat-geodesic method** — best area preservation, no boundary cut needed for closed surfaces, works on all topologies.
+**Target use case**: Window/door hardware parts (handles, hinges) from STEP files.
 
 ## Architecture
 
+### Server (`/server`)
+- **HTTP API** (`main.cpp`): `/api/tessellate/step`, `/api/parameterize`, `/api/health`
+- **Broker**: spawns `meshparam_bench.exe` subprocesses per method (process isolation — crashes don't kill the server)
+- **8 methods**: heat, lscm, igl_arap, slim, cgal_conformal, cgal_arap, cgal_authalic, cm (Composite Majorization)
+- **CLI tools**: `meshparam_bench.exe <method> <input.obj|.glb>` — self-contained per-method parameterizer
+- **Dependencies**: Eigen, libigl, CGAL (vcpkg), tinygltf, Spectra, Intel MKL (for CM/Pardiso)
+
+### Gmsh Pipeline (`/scripts/occ_gmsh_pipeline.py`)
+- **STEP → GLB**: OCC import → heal → Gmsh isotropic meshing → OCC normals → B-Rep attributes → GLB
+- **Chord deviation target**: 1mm (curvature-adaptive, `MeshSizeFromCurvature`)
+- **Auto-seam**: Finds longest Z-perpendicular B-Rep edge loop, splits mesh into front/back at CAD level
+- **Split by topology**: Flood-fill from OCC face adjacency graph, seam edges as barrier
+- **B-Rep edge visualization**: Edge polylines stored as JSON extras in GLB node (`edgeLines: {seam, zperp, other}`)
+- **Edge node ordering**: Sorted by parametric coordinate along OCC curves (prevents random connections)
+- **Output**: 1-2 triangle primitives (front/back) + `edgeLines` extras with 3D position pairs per edge type
+
 ### Heat-Geodesic Parameterizer (`/src`, `/include/meshparam`)
-- **Pipeline**: Laplace-Beltrami + Mass matrix → Heat equation (implicit Euler) → Normalized flux → Poisson solve for geodesics → MDS eigendecomposition → UV coords
-- **Dependencies**: Eigen (sparse solvers), libigl (cotangent Laplacian, gradient operator), tinygltf (glTF I/O), Spectra (eigenvalues)
-- **Build**: CMake + FetchContent, MSVC/Ninja. `build/meshparam_cli.exe`
+- **Pipeline**: Laplace-Beltrami + Mass matrix → Heat equation → Normalized flux → Poisson solve → MDS eigendecomposition → UV coords
 - **Limitation**: O(n²) geodesic matrix — practical limit ~5K vertices
 
 ### CGAL Parameterizer (`/cgal_param`, `/cgal_param_native`)
-- **Methods**: Discrete Conformal, ARAP, Discrete Authalic, Mean Value Coordinates (LSCM disabled — CGAL 6.x/Boost 1.90 regression)
-- **Kernel**: `Simple_cartesian<double>` for WASM, `EPICK` for native — **produces identical results** (verified)
-- **Seam cut**: Geodesic path between BFS-diameter poles for closed meshes
-- **Native build** uses vcpkg CGAL (C:/vcpkg) with GMP/MPFR
-- **No GMP needed** for parameterization quality — confirmed by EPICK vs Simple_cartesian comparison
+- **Methods**: Discrete Conformal, ARAP, Discrete Authalic (LSCM disabled — CGAL 6.x/Boost 1.90 regression)
+- **Kernel**: `Simple_cartesian<double>` for WASM, `EPICK` for native
+- **Seam cut**: BFS geodesic (fallback when no auto-seam), or auto-seam from Z-perp loop
 
-### Test Mesh Generation (`/scripts/generate_test_meshes.py`)
-- Uses **Gmsh + OpenCascade** for geometry and isotropic meshing
-- Mesh error target: ~1mm chord deviation (curvature-adaptive)
-- OCC surface normals: per-vertex, queried at parametric positions via `gmsh.model.getNormal()`
-- Output: shared-vertex .glb + .occmesh.npz sidecar (split mesh with per-vertex OCC normals)
+### Composite Majorization (`/extern/CompMajor`)
+- **Algorithm**: Newton-based Symmetric Dirichlet optimizer (Stein et al.)
+- **Dependencies**: Intel MKL (Pardiso sparse solver)
+- **Best quality** when it converges (99.4% zero-flip), 86% success rate
 
-### Result Assembly (`/scripts/assemble_result.py`, `/scripts/apply_checkerboard.py`)
-- Combines parameterized UVs + OCC normals (smooth within B-Rep faces, sharp at face boundaries) + 25mm checkerboard texture
-- Checkerboard: 2x2 B/W PNG, MIRRORED_REPEAT, KHR_texture_transform for UV scaling
-- Non-OCC meshes (CGAL refs, Klein bottle parametric) get face-averaged smooth vertex normals
+### Frontend (`/web`)
+- **BabylonJS** viewer with checkerboard texture, seam visualization, B-Rep face edges
+- **ViewCube**: Separate BabylonJS canvas overlay (top-right), face/edge/corner picking, ortho/perspective toggle
+- **Edge visualization**: `CreateLineSystem` from JSON extras, parented to glTF root node (LH Z-flip)
+- **Color coding**: Red=seam, Orange=Z-perp edges, Yellow=other B-Rep edges
+- **Split mesh display**: Pale yellow (front/Z+), pale green (back) before parameterization
+- **Custom GLB attributes**: `_SEAM` (per-vertex float), `_FACE_ID` (per-vertex float) — injected via raw GLB parsing
+
+### Benchmark (`/scripts/run_benchmark.py`, `/benchmark`)
+- **Dataset**: Stein et al. 2022, 4,826 disk-topology meshes
+- **CLI-based**: Each method runs as subprocess with timeout (process isolation)
+- **Metrics**: Symmetric Dirichlet energy, flipped triangles, L2/L∞ area distortion
+
+## Benchmark Results (4,819 meshes)
+
+| Method | Success | Median SD | 0-flip% | Wins |
+|--------|---------|-----------|---------|------|
+| CM | 86% | 0.0055 | 99.4% | 1,423 |
+| CGAL ARAP | 94% | 0.0078 | 95.5% | 1,151 |
+| SLIM | 100% | 0.0084 | 83.8% | 761 |
+| LSCM | 100% | 0.0105 | 85.2% | 725 |
+| igl ARAP | 100% | 0.0074 | 63.4% | 585 |
+| **Broker** | **100%** | **0.0057** | **94.7%** | |
 
 ## Key Decisions
-- **C++ over Rust**: better library coverage (libigl, CGAL, Eigen) for geometry processing
-- **Gmsh + OpenCascade** for test geometry: isotropic meshing, analytical surface normals
-- **Normals from OCC faces**: each triangle's normal comes from the parent B-Rep surface at the triangle centroid, not from the tessellation. Vertices split at OCC face boundaries for sharp creases.
-- **All meshes in mm**: STEP files in other units (e.g., teapot in inches) scaled to mm at import
-- **Checkerboard UV scale**: `max_extent / 50.0` for mm meshes, fixed 4.0 for small/normalized meshes
+- **C++ over Rust**: better library coverage (libigl, CGAL, Eigen)
+- **Gmsh + OpenCascade** for meshing: isotropic, curvature-adaptive, direct from B-Rep (not remeshing)
+- **Normals from OCC faces**: queried at parametric positions via `gmsh.model.getNormal()`
+- **All meshes in mm**: STEP files auto-detected and scaled at import
+- **Process isolation**: Each parameterization method runs as subprocess — crashes don't affect broker
+- **BabylonJS left-handed**: glTF loader negates Z; edge lines must be parented to glTF root node
+- **Edge data as JSON extras**: Not glTF line primitives (BabylonJS doesn't handle mixed primitives well)
+- **Auto-seam at CAD level**: Split OCC faces into front/back groups before meshing (not post-tessellation splitting)
 
 ## Build Commands
 
 ```bash
-# Heat-geodesic (native)
-# Requires: VS2022, Ninja, CMake
-powershell -Command "& { Enter-VsDevShell ...; cmake -G Ninja -B build; cmake --build build }"
+# Server + bench CLI (native, requires VS2022 + vcpkg + MKL)
+cd server && cmake -G Ninja -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake && cmake --build build
 
 # CGAL (WASM-compatible, no GMP)
 cd cgal_param && cmake -G Ninja -B build && cmake --build build
 
-# CGAL (native with EPICK, uses vcpkg)
-cd cgal_param_native && cmake -G Ninja -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake && cmake --build build
+# Frontend (Vite dev server)
+cd web && npx vite  # → http://localhost:5199
 
-# Generate test meshes
-python scripts/generate_test_meshes.py
+# Run server
+server/build/meshparam_server.exe --port 8080 --web-root web --gmsh-cli "python scripts/occ_gmsh_pipeline.py"
 
-# Run full comparison (parallel)
-python scripts/run_all_parallel.py
+# Benchmark (CLI, process-isolated)
+python scripts/run_benchmark.py --subset disk --workers 1 --timeout 120
 ```
 
 ## Test Data
-- OCC meshes: cube, filleted cube, sphere, torus (2 sizes), Klein bottle (OCC STEP), teapot (STEP, scaled from inches)
-- CGAL reference meshes: nefertiti, three_peaks, head, mushroom (from CGAL data, scaled to ~100mm)
-- Paper: `Documents/mathematics-07-00753.pdf`
-- STEP files: `Documents/KleinBottle.STEP`, `Documents/teapot.stp`
+- STEP files: `step/0627778.step`, `step/0618969.step`, `step/0617023B.step`
+- Benchmark: `benchmark/Obj_Files/` (Stein et al. 2022 dataset, 11,913 meshes)
+- Results: `benchmark_results/benchmark_raw.json`, `benchmark_cm_raw.json`
