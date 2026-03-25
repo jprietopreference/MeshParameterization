@@ -34,90 +34,59 @@ paths:
   /api/tessellate/step:
     post:
       summary: Tessellate a STEP file to GLB
-      description: >
-        Accepts a binary STEP file and returns a tessellated triangle mesh in
-        glTF binary (.glb) format. Uses Gmsh + OpenCascade pipeline.
-
+      description: |
+        Accepts a binary STEP file and returns a tessellated triangle mesh in glTF binary (.glb) format. Uses the Gmsh + OpenCascade pipeline.
 
         ## GLB Output Structure
 
+        ### glTF Mesh Primitives
 
-        ### Primitives
+        The output GLB contains a single `mesh` with **1 or 2 triangle primitives** (mode=4), sharing one vertex buffer:
 
-        The output GLB contains 1 or 2 triangle primitives (mode=4):
+        | Condition | Primitives | Description |
+        |-----------|-----------|-------------|
+        | No auto-seam | 1 primitive | Full mesh as a single part |
+        | Auto-seam detected | 2 primitives | **Primitive 0** = front faces (Z+ normals), **Primitive 1** = back faces |
 
-        - **1 primitive**: No auto-seam detected; the full mesh as a single part.
-
-        - **2 primitives**: Auto-seam detected (Z-perpendicular B-Rep edge loop found).
-          Primitive 0 = front/top faces (Z+ normals), Primitive 1 = back/bottom faces.
-          The split is topological (flood-fill on OCC face adjacency, seam edges as barrier),
-          not geometric (not centroid-Z classification).
-
+        When 2 primitives are present, the split is **topological**: a flood-fill on OCC face adjacency with the seam edges as barrier. Both primitives index into the same shared vertex buffer — Primitive 0 uses indices `[0, N_front)` and Primitive 1 uses indices `[N_front, N_total)`.
 
         ### Per-Vertex Attributes
 
-        Each triangle primitive has these vertex attributes:
+        All primitives reference the same vertex attribute accessors:
 
-        - `POSITION` (VEC3, float32): Vertex position in mm.
-
-        - `NORMAL` (VEC3, float32): Surface normal queried from the OCC B-Rep surface
-          at the parametric position of each mesh node. Not interpolated from triangulation —
-          comes directly from the analytical CAD surface. Vertices are split at B-Rep face
-          boundaries so normals are sharp across face edges.
-
-        - `_FACE_ID` (SCALAR, float32): OCC B-Rep face index for each vertex.
-          Vertices on the same B-Rep face share the same value. Used to identify
-          face boundaries in the viewer.
-
-        - `_SEAM` (SCALAR, float32): 1.0 for vertices on the auto-seam loop, 0.0 otherwise.
-          Only present when a Z-perpendicular seam was detected.
-
+        | Attribute | Type | Description |
+        |-----------|------|-------------|
+        | `POSITION` | VEC3, float32 | Vertex position in mm |
+        | `NORMAL` | VEC3, float32 | OCC B-Rep surface normal at the parametric position of each node. Not interpolated — queried from the analytical CAD surface. Vertices split at B-Rep face boundaries for sharp creases. |
+        | `_FACE_ID` | SCALAR, float32 | OCC B-Rep face index. Vertices on the same face share the same value. |
+        | `_SEAM` | SCALAR, float32 | `1.0` for vertices on the auto-seam loop, `0.0` otherwise. |
 
         ### Node Extras — B-Rep Edge Lines
 
-        The glTF node (nodes[0]) contains an `extras.edgeLines` object with B-Rep edge
-        polyline data for visualization. Each key maps to a flat array of 3D point pairs
-        `[x0,y0,z0, x1,y1,z1, ...]` representing line segments along the B-Rep curves.
-        Points are offset 0.05mm along the surface normal to avoid Z-fighting.
+        `nodes[0].extras.edgeLines` contains B-Rep edge polyline data for visualization. Each key maps to a flat array of 3D point pairs `[x0,y0,z0, x1,y1,z1, ...]`:
 
-        - `edgeLines.seam` (array of float): Line segments along the auto-seam loop
-          (the longest Z-perpendicular B-Rep edge loop). Displayed in **red**.
+        | Key | Color | Description |
+        |-----|-------|-------------|
+        | `seam` | Red | Auto-seam loop (longest Z-perpendicular B-Rep edge loop) |
+        | `zperp` | Orange | Other Z-perpendicular B-Rep edges |
+        | `other` | Yellow | All remaining B-Rep edges |
 
-        - `edgeLines.zperp` (array of float): Line segments along other Z-perpendicular
-          B-Rep edges (not the seam). Displayed in **orange**.
-
-        - `edgeLines.other` (array of float): Line segments along all remaining B-Rep
-          edges. Displayed in **yellow**.
-
-        Edge nodes are sorted by parametric coordinate along each OCC curve, so consecutive
-        point pairs form a proper polyline (no random connections). Coordinates are in the
-        same space as POSITION (mm, right-handed). The BabylonJS viewer parents these lines
-        to the glTF root node to inherit the left-handed Z-flip transform.
-
+        Edge nodes are sorted by parametric coordinate along each OCC curve. Points are offset 0.05mm along the surface normal to avoid Z-fighting. Coordinates are in mm, right-handed (glTF convention).
 
         ### Auto-Seam Detection
 
-        The pipeline automatically finds the longest closed loop of Z-perpendicular B-Rep
-        edges (all edge endpoints at the same Z within 0.5mm tolerance). If found and it
-        divides the mesh into two balanced halves (neither side < 10% of faces), it is used
-        as the seam for splitting. Among equal-length candidates, the loop at minimum Z is
-        chosen. The seam loop is stored in `edgeLines.seam` and marked with `_SEAM=1.0`
-        on the corresponding mesh vertices.
-
+        The pipeline finds the longest closed loop of Z-perpendicular B-Rep edges (all endpoints at same Z ±0.5mm). If the loop divides the mesh into two balanced halves (neither < 10% of faces), it becomes the seam. Among equal-length candidates, the loop at minimum Z is chosen.
 
         ### Meshing Parameters
 
-        - Chord deviation target: configurable via `deflection` parameter (default 1mm).
-
-        - Curvature-adaptive: `MeshSizeFromCurvature = N` elements per 2π.
-
-        - Min/max edge size derived from bounding box extent.
-
-        - Gmsh Frontal-Delaunay algorithm (Algorithm 6).
-
-        - OCC shape healing applied before meshing.
-
-        - Auto unit detection: meters→mm, inches→mm scaling.
+        | Parameter | Value |
+        |-----------|-------|
+        | Chord deviation | Configurable via `deflection` (default 1mm) |
+        | Curvature elements | `MeshSizeFromCurvature = N` elements per 2π |
+        | Edge size limits | Derived from bounding box extent |
+        | Algorithm | Gmsh Frontal-Delaunay (Algorithm 6) |
+        | Preprocessing | OCC shape healing before meshing |
+        | Units | Auto-detect: meters→mm, inches→mm |
       operationId: tessellateStep
       parameters:
         - name: tessellator
@@ -182,59 +151,43 @@ paths:
   /api/parameterize:
     post:
       summary: Parameterize a GLB mesh
-      description: >
-        Accepts a glTF binary (.glb) triangle mesh and returns a parameterized
-        GLB with UV coordinates. When method is "auto" (default), the broker
-        runs all available methods in parallel and picks the best result based
-        on a composite quality score (Symmetric Dirichlet energy + flip count).
-
+      description: |
+        Accepts a glTF binary (.glb) triangle mesh and returns a parameterized GLB with UV coordinates. When method is "auto" (default), the broker runs all methods in parallel and picks the best by Symmetric Dirichlet energy + flip count.
 
         ## GLB Output Structure
 
+        The parameterized GLB preserves the input primitive structure (1 or 2 primitives) and adds:
 
-        The parameterized GLB preserves the input structure (1 or 2 primitives)
-        and adds:
+        | Attribute | Type | Description |
+        |-----------|------|-------------|
+        | `TEXCOORD_0` | VEC2, float32 | UV coordinates, normalized to [0,1] |
+        | `_SEAM` | SCALAR, float32 | Preserved from input |
+        | `NORMAL` | VEC3, float32 | Preserved from input |
+        | `_FACE_ID` | SCALAR, float32 | Preserved from input |
 
-        - `TEXCOORD_0` (VEC2, float32): UV coordinates from the winning method,
-          normalized to [0,1] range.
-
-        - `_SEAM` (SCALAR, float32): Seam vertices (preserved from input).
-
-        - `NORMAL` and `_FACE_ID` are preserved from the input GLB.
-
-        - `extras.edgeLines` is NOT present in the parameterized output (cached
-          client-side from the tessellation step).
-
+        Note: `extras.edgeLines` is NOT present in the parameterized output (the viewer caches it from the tessellation step).
 
         ## Split Mesh Handling
 
-        When the input has 2 primitives (front/back split from auto-seam):
+        When the input has 2 primitives (front/back from auto-seam):
 
-        - Primitive 0 (front): parameterized with the full broker (all methods compete).
-
-        - Primitive 1 (back): parameterized with LSCM only (fast, reliable, back face
-          is less visually important).
-
-        - Results are combined into a single output GLB.
-
+        | Primitive | Strategy | Reason |
+        |-----------|----------|--------|
+        | 0 (front) | Full broker (all methods compete) | Primary visible surface |
+        | 1 (back) | LSCM only | Fast, reliable, less visually important |
 
         ## Available Methods
 
-        - `heat`: Heat-geodesic MDS (O(n²), limit ~5K vertices).
-
-        - `lscm`: Least Squares Conformal Maps (fastest, robust).
-
-        - `igl_arap`: As-Rigid-As-Possible (libigl).
-
-        - `slim`: Scalable Locally Injective Maps (Symmetric Dirichlet optimizer).
-
-        - `cgal_conformal`: CGAL Discrete Conformal.
-
-        - `cgal_arap`: CGAL ARAP (best reliability + quality balance).
-
-        - `cgal_authalic`: CGAL Discrete Authalic.
-
-        - `cm`: Composite Majorization (Newton-based, best quality when converges).
+        | Method | Algorithm | Notes |
+        |--------|-----------|-------|
+        | `heat` | Heat-geodesic MDS | O(n²), limit ~5K vertices |
+        | `lscm` | Least Squares Conformal Maps | Fastest, most robust |
+        | `igl_arap` | As-Rigid-As-Possible (libigl) | Good balance |
+        | `slim` | Scalable Locally Injective Maps | Symmetric Dirichlet optimizer |
+        | `cgal_conformal` | CGAL Discrete Conformal | Fast but high distortion |
+        | `cgal_arap` | CGAL ARAP | Best reliability + quality balance |
+        | `cgal_authalic` | CGAL Discrete Authalic | Area-preserving |
+        | `cm` | Composite Majorization (Newton) | Best quality when converges (86% success) |
       operationId: parameterize
       parameters:
         - name: method
