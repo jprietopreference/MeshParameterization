@@ -1365,8 +1365,24 @@ int main(int argc, char* argv[]) {
                   << " (score=" << best.score() << ")" << std::endl;
 
         // Re-apply original normals: map UVs from welded result back to split-vertex input.
-        // Skip if the result came from split-and-combine (param has more faces than original).
+        // Skip if the result is a 2-primitive GLB (split-and-combine from bench_cli).
         {
+            // Check if best.glb has multiple primitives by peeking at the JSON
+            bool is_multi_prim = false;
+            {
+                if (best.glb.size() > 20) {
+                    uint32_t json_len = *reinterpret_cast<const uint32_t*>(best.glb.data() + 12);
+                    std::string js(best.glb.begin() + 20, best.glb.begin() + 20 + json_len);
+                    // Quick check: count "indices" occurrences (one per primitive)
+                    size_t pos = 0, count = 0;
+                    while ((pos = js.find("\"indices\"", pos)) != std::string::npos) { count++; pos += 9; }
+                    is_multi_prim = count >= 2;
+                }
+            }
+            if (is_multi_prim) {
+                std::cerr << "  [broker] Multi-primitive result — passing through directly" << std::endl;
+                // bench_cli already built correct 2-prim GLB with normals, face_ids, seam
+            } else {
             auto orig = meshparam::load_gltf_from_memory(input_original);
             auto param = meshparam::load_gltf_from_memory(best.glb);
             bool is_split_result = param.num_faces() > orig.num_faces();
@@ -1408,6 +1424,7 @@ int main(int argc, char* argv[]) {
                 best.vertices = orig.num_vertices();
                 best.faces = orig.num_faces();
             }
+            } // end else (single-primitive path)
         }
 
         // Build all-methods JSON

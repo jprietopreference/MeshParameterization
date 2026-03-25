@@ -40,8 +40,17 @@ function createScene() {
     const cam = new BABYLON.ArcRotateCamera('cam', Math.PI/2, Math.PI/2, 300, BABYLON.Vector3.Zero(), scene);
     cam.attachControl(canvas, true);
     cam.wheelPrecision = 1; cam.minZ = 0.1; cam.maxZ = 10000;
-    new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0,1,0), scene).intensity = 0.9;
-    new BABYLON.DirectionalLight('d', new BABYLON.Vector3(-1,-2,1), scene).intensity = 0.5;
+    // Uniform lighting: hemispheric (ambient fill) + 3 directional from orthogonal axes
+    // This minimizes shading gradients on flat faces while preserving curvature visibility
+    const hemi = new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0, 1, 0), scene);
+    hemi.intensity = 0.7;
+    hemi.groundColor = new BABYLON.Color3(0.4, 0.4, 0.45); // strong ground fill
+    const d1 = new BABYLON.DirectionalLight('d1', new BABYLON.Vector3(0, 0, -1), scene);
+    d1.intensity = 0.3;
+    const d2 = new BABYLON.DirectionalLight('d2', new BABYLON.Vector3(-1, 0, 0), scene);
+    d2.intensity = 0.2;
+    const d3 = new BABYLON.DirectionalLight('d3', new BABYLON.Vector3(0, -1, 0), scene);
+    d3.intensity = 0.15;
     return scene;
 }
 engine.runRenderLoop(() => { if (scene) scene.render(); });
@@ -83,6 +92,9 @@ async function loadGlb(glbBuffer, applyChecker = false) {
             const extent = max.subtract(min).length();
             scene.activeCamera.target = center;
             scene.activeCamera.radius = extent * 1.5;
+            // Tighten near/far clip to scene bounds for better depth precision (reduces Z-fighting)
+            scene.activeCamera.minZ = extent * 0.01;  // 1% of extent
+            scene.activeCamera.maxZ = extent * 10;    // 10x extent
             new BABYLON.AxesViewer(scene, extent > 10 ? 20 : extent * 0.2);
             // Find all renderable meshes
             const renderMeshes = container.meshes.filter(m => m.getTotalVertices() > 0);
@@ -99,22 +111,29 @@ async function loadGlb(glbBuffer, applyChecker = false) {
             const glTFRoot = renderMeshes[0]?.parent || null;
             drawEdgeLinesFromExtras(container, glTFRoot);
 
+            console.log(`[loadGlb] applyChecker=${applyChecker}, renderMeshes=${renderMeshes.length}`,
+                renderMeshes.map(m => `${m.name}: ${m.getTotalVertices()}v ${m.getTotalIndices()/3}f vis=${m.isVisible}`));
+
             if (applyChecker) {
                 // After parameterization: apply checkerboard per primitive
+                // renderMeshes[0] = front (B/W), renderMeshes[1+] = back (pale red/grey)
                 for (let mi = 0; mi < renderMeshes.length; mi++) {
                     const mesh = renderMeshes[mi];
-                    if (mesh.isVerticesDataPresent(BABYLON.VertexBuffer.UVKind))
-                        applyCheckerboard(mesh, mi > 0); // mi>0 = back face
+                    console.log(`[checker] prim ${mi}: ${mesh.name} ${mesh.getTotalVertices()}v vis=${mesh.isVisible}`);
+                    applyCheckerboard(mesh, mi > 0);
+                    mesh.isVisible = true;
                 }
             } else if (renderMeshes.length >= 2) {
                 // Before parameterization: color front/back differently
                 const frontMat = new BABYLON.StandardMaterial('frontMat', scene);
                 frontMat.diffuseColor = new BABYLON.Color3(1.0, 1.0, 0.7); // pale yellow
+                frontMat.emissiveColor = new BABYLON.Color3(0.3, 0.3, 0.2); // ambient fill
                 frontMat.backFaceCulling = false;
                 renderMeshes[0].material = frontMat;
 
                 const backMat = new BABYLON.StandardMaterial('backMat', scene);
                 backMat.diffuseColor = new BABYLON.Color3(0.7, 1.0, 0.7); // pale green
+                backMat.emissiveColor = new BABYLON.Color3(0.2, 0.3, 0.2); // ambient fill
                 backMat.backFaceCulling = false;
                 renderMeshes[1].material = backMat;
             }
@@ -208,16 +227,15 @@ function showMeshQuality(mesh) {
 
 function applyCheckerboard(mesh, isBack = false) {
     const mat = new BABYLON.StandardMaterial(isBack ? 'checkerBack' : 'checker', scene);
-    const tex = new BABYLON.Texture('textures/checker.png', scene, false, true, BABYLON.Texture.NEAREST_SAMPLINGMODE);
+    const texPath = isBack ? 'textures/checker_grey.png' : 'textures/checker.png';
+    const tex = new BABYLON.Texture(texPath, scene, false, true, BABYLON.Texture.NEAREST_SAMPLINGMODE);
     tex.wrapU = BABYLON.Texture.MIRROR_ADDRESSMODE;
     tex.wrapV = BABYLON.Texture.MIRROR_ADDRESSMODE;
     tex.uScale = 2.0; tex.vScale = 2.0;
     mat.diffuseTexture = tex;
-    if (isBack) {
-        // Grey/white for back face
-        mat.diffuseColor = new BABYLON.Color3(0.7, 0.7, 0.7);
-    }
-    mat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+    mat.emissiveTexture = tex;  // self-lit: eliminates shading gradients from directional lights
+    mat.emissiveColor = new BABYLON.Color3(0.3, 0.3, 0.3);
+    mat.specularColor = new BABYLON.Color3(0.05, 0.05, 0.05);
     mat.backFaceCulling = false;
     mesh.material = mat;
 }
@@ -699,6 +717,44 @@ function showFaceEdges() {
         scene?.meshes.filter(m => m.name === n).forEach(m => { m.isVisible = show; });
 }
 
+function showVertexNormals() {
+    scene?.meshes.filter(m => m.name === '_vertex_normals').forEach(m => m.dispose());
+    if (!currentMesh) return;
+
+    // Collect positions and normals from all render meshes (front + back primitives)
+    const renderMeshes = scene.meshes.filter(m =>
+        m.getTotalVertices() > 0 && m.getVerticesData(BABYLON.VertexBuffer.NormalKind));
+
+    // Compute normal length: 2% of bounding box diagonal
+    const bb = currentMesh.getBoundingInfo().boundingBox;
+    const diag = bb.maximumWorld.subtract(bb.minimumWorld).length();
+    const normalLen = diag * 0.02;
+
+    const allLines = [];
+    for (const mesh of renderMeshes) {
+        const positions = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+        const normals = mesh.getVerticesData(BABYLON.VertexBuffer.NormalKind);
+        if (!positions || !normals) continue;
+
+        const nv = positions.length / 3;
+        for (let i = 0; i < nv; i++) {
+            const px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
+            const nx = normals[i * 3], ny = normals[i * 3 + 1], nz = normals[i * 3 + 2];
+            allLines.push([
+                new BABYLON.Vector3(px, py, pz),
+                new BABYLON.Vector3(px + nx * normalLen, py + ny * normalLen, pz + nz * normalLen),
+            ]);
+        }
+    }
+
+    if (allLines.length === 0) return;
+    const lineSys = BABYLON.MeshBuilder.CreateLineSystem('_vertex_normals', { lines: allLines }, scene);
+    lineSys.color = new BABYLON.Color3(1, 1, 1);
+    lineSys.isPickable = false;
+    if (lastGlTFRoot) lineSys.parent = lastGlTFRoot;
+    console.log(`[normals] ${allLines.length} vertex normals, length=${normalLen.toFixed(2)}mm`);
+}
+
 // Legacy Z-loop function (replaced by color-coded edges)
 function showZPerpendicularLoops(mesh) {
     const overlayName = '_z_loops';
@@ -866,6 +922,14 @@ $('showSeams')?.addEventListener('change', () => {
 
 $('showFaceEdges')?.addEventListener('change', () => {
     showFaceEdges(currentMesh);
+});
+
+$('showNormals')?.addEventListener('change', () => {
+    if ($('showNormals').checked) {
+        showVertexNormals();
+    } else {
+        scene?.meshes.filter(m => m.name === '_vertex_normals').forEach(m => m.dispose());
+    }
 });
 
 // --- Export ---

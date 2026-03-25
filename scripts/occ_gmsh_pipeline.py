@@ -120,12 +120,10 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
     # Don't propagate small boundary sizes deep into flat face interiors.
     gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
     gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-    # Smooth size gradation to limit abrupt size transitions
     gmsh.option.setNumber("Mesh.SmoothRatio", 2.0)
-    # Optimize mesh quality after generation (Laplacian smoothing + edge swaps)
     gmsh.option.setNumber("Mesh.Optimize", 1)
     gmsh.option.setNumber("Mesh.OptimizeNetgen", 1)
-    gmsh.option.setNumber("Mesh.Smoothing", 10)  # Laplacian smoothing passes
+    gmsh.option.setNumber("Mesh.Smoothing", 10)
 
     # 5. Generate mesh (with fallback: re-import without heal if heal broke edges)
     print(f"[pipeline] Meshing (min={min_edge:.4f}, max={max_edge:.4f}, curv={curvature_elements})...")
@@ -524,8 +522,9 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
 
         # Build edge line data as JSON extras (BabylonJS doesn't handle line primitives well)
         # Offset each edge point 0.05mm along the vertex normal to avoid Z-fighting
-        EDGE_OFFSET = 0.1  # mm
         all_pos_arr = V.reshape(-1, 3)
+        max_dim = max(all_pos_arr.max(axis=0) - all_pos_arr.min(axis=0))
+        EDGE_OFFSET = max_dim / 1000.0  # 1/1000 of max bounding box dimension
         all_nrm_arr = N.reshape(-1, 3)
         edge_lines = {}  # "seam" / "zperp" / "other" -> [x,y,z,x,y,z,...]
         etype_keys = {1: "seam", 2: "zperp", 3: "other"}

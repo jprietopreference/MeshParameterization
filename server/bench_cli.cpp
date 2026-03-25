@@ -329,55 +329,141 @@ int main(int argc, char* argv[]) {
                 int fnv = fp.num_vertices(), bnv = bp.num_vertices();
                 int fnf = fp.num_faces(), bnf = bp.num_faces();
 
-                meshparam::TriMesh combined;
-                combined.V.resize(fnv + bnv, 3);
-                combined.V.topRows(fnv) = fp.V;
-                combined.V.bottomRows(bnv) = bp.V;
-                combined.F.resize(fnf + bnf, 3);
-                combined.F.topRows(fnf) = fp.F;
-                combined.F.bottomRows(bnf) = bp.F.array() + fnv;
-                if (fp.has_uvs()) {
-                    combined.UV.resize(fnv + bnv, 2);
-                    combined.UV.topRows(fnv) = fp.UV;
-                    if (bp.has_uvs()) combined.UV.bottomRows(bnv) = bp.UV;
-                    else combined.UV.bottomRows(bnv).setZero();
-                }
-                if (fp.has_normals() || bp.has_normals()) {
-                    combined.N.resize(fnv + bnv, 3);
-                    if (fp.has_normals()) combined.N.topRows(fnv) = fp.N;
-                    if (bp.has_normals()) combined.N.bottomRows(bnv) = bp.N;
-                }
-                // Restore _FACE_ID and _SEAM from original primitives
-                auto orig_front = meshparam::load_gltf_from_memory(front_glb);
-                auto orig_back = meshparam::load_gltf_from_memory(back_glb);
-                if (orig_front.has_face_ids() || orig_back.has_face_ids()) {
-                    struct V3H { size_t operator()(const std::array<int64_t,3>& v) const {
-                        size_t h=0; for(auto x:v) h^=std::hash<int64_t>()(x)+0x9e3779b9+(h<<6)+(h>>2); return h; }};
-                    auto mk = [](const Eigen::MatrixXd& V, int i) {
-                        return std::array<int64_t,3>{(int64_t)std::round(V(i,0)*1e4),(int64_t)std::round(V(i,1)*1e4),(int64_t)std::round(V(i,2)*1e4)};};
-                    std::unordered_map<std::array<int64_t,3>,int,V3H> orig_pos;
-                    for (int i=0;i<orig_front.num_vertices();i++) orig_pos[mk(orig_front.V,i)]=i;
-                    for (int i=0;i<orig_back.num_vertices();i++) orig_pos[mk(orig_back.V,i)]=orig_front.num_vertices()+i;
-                    // Merge orig face_ids/seam
-                    Eigen::VectorXd all_fid(orig_front.num_vertices()+orig_back.num_vertices());
-                    Eigen::VectorXd all_seam(orig_front.num_vertices()+orig_back.num_vertices());
-                    all_fid.setConstant(-1); all_seam.setZero();
-                    if(orig_front.has_face_ids()) all_fid.head(orig_front.num_vertices())=orig_front.face_ids;
-                    if(orig_back.has_face_ids()) all_fid.tail(orig_back.num_vertices())=orig_back.face_ids;
-                    if(orig_front.has_seam()) all_seam.head(orig_front.num_vertices())=orig_front.seam;
-                    if(orig_back.has_seam()) all_seam.tail(orig_back.num_vertices())=orig_back.seam;
-                    combined.face_ids.resize(fnv+bnv); combined.face_ids.setConstant(-1);
-                    combined.seam.resize(fnv+bnv); combined.seam.setZero();
-                    for(int i=0;i<fnv+bnv;i++){
-                        auto it=orig_pos.find(mk(combined.V,i));
-                        if(it!=orig_pos.end()){combined.face_ids(i)=all_fid(it->second);combined.seam(i)=all_seam(it->second);}
-                    }
-                }
-
+                // Write 2-primitive GLB manually (raw JSON + binary, like occ_gmsh_pipeline.py)
                 result = front_result;
-                result.glb = meshparam::save_gltf_to_memory(combined);
                 result.vertices = fnv + bnv;
                 result.faces = fnf + bnf;
+                {
+                    auto orig_front = meshparam::load_gltf_from_memory(front_glb);
+                    auto orig_back = meshparam::load_gltf_from_memory(back_glb);
+
+                    // Build binary buffer
+                    std::vector<uint8_t> bin;
+                    auto appendF32 = [&](const float* data, size_t count) {
+                        size_t off = bin.size();
+                        bin.insert(bin.end(), (uint8_t*)data, (uint8_t*)(data + count));
+                        return off;
+                    };
+                    auto appendMatF32 = [&](const Eigen::MatrixXd& M) {
+                        size_t off = bin.size();
+                        for (int i = 0; i < M.rows(); i++)
+                            for (int j = 0; j < M.cols(); j++) {
+                                float v = (float)M(i,j);
+                                bin.insert(bin.end(), (uint8_t*)&v, (uint8_t*)&v + 4);
+                            }
+                        return off;
+                    };
+                    auto appendVecF32 = [&](const Eigen::VectorXd& V) {
+                        size_t off = bin.size();
+                        for (int i = 0; i < V.rows(); i++) {
+                            float v = (float)V(i);
+                            bin.insert(bin.end(), (uint8_t*)&v, (uint8_t*)&v + 4);
+                        }
+                        return off;
+                    };
+                    auto appendIdx = [&](const Eigen::MatrixXi& F) {
+                        size_t off = bin.size();
+                        for (int i = 0; i < F.rows(); i++)
+                            for (int j = 0; j < F.cols(); j++) {
+                                uint32_t v = (uint32_t)F(i,j);
+                                bin.insert(bin.end(), (uint8_t*)&v, (uint8_t*)&v + 4);
+                            }
+                        return off;
+                    };
+
+                    // Front: pos, nrm, uv, fid, seam
+                    size_t o_fp = appendMatF32(fp.V);
+                    size_t o_fn = appendMatF32(fp.has_normals() ? fp.N : orig_front.N);
+                    size_t o_fu = appendMatF32(fp.UV);
+                    size_t o_ff = appendVecF32(orig_front.has_face_ids() ? orig_front.face_ids : Eigen::VectorXd::Constant(fnv,-1));
+                    size_t o_fs = appendVecF32(orig_front.has_seam() ? orig_front.seam : Eigen::VectorXd::Zero(fnv));
+                    // Back: pos, nrm, uv, fid, seam
+                    size_t o_bp = appendMatF32(bp.V);
+                    size_t o_bn = appendMatF32(bp.has_normals() ? bp.N : orig_back.N);
+                    size_t o_bu = appendMatF32(bp.has_uvs() ? bp.UV : Eigen::MatrixXd::Zero(bnv,2));
+                    size_t o_bf = appendVecF32(orig_back.has_face_ids() ? orig_back.face_ids : Eigen::VectorXd::Constant(bnv,-1));
+                    size_t o_bs = appendVecF32(orig_back.has_seam() ? orig_back.seam : Eigen::VectorXd::Zero(bnv));
+                    // Indices
+                    size_t o_fi = appendIdx(fp.F);
+                    size_t o_bi = appendIdx(bp.F);
+                    while (bin.size() % 4) bin.push_back(0);
+
+                    Eigen::Vector3d fmn=fp.V.colwise().minCoeff(), fmx=fp.V.colwise().maxCoeff();
+                    Eigen::Vector3d bmn=bp.V.colwise().minCoeff(), bmx=bp.V.colwise().maxCoeff();
+
+                    // Build JSON manually
+                    auto jBV = [](size_t off, size_t len, int tgt) {
+                        return "{\"buffer\":0,\"byteOffset\":" + std::to_string(off) +
+                               ",\"byteLength\":" + std::to_string(len) +
+                               ",\"target\":" + std::to_string(tgt) + "}";
+                    };
+                    auto jAcc = [](int bv, int ct, int n, const std::string& tp,
+                                   const std::string& mn="", const std::string& mx="") {
+                        std::string s = "{\"bufferView\":" + std::to_string(bv) +
+                            ",\"componentType\":" + std::to_string(ct) +
+                            ",\"count\":" + std::to_string(n) +
+                            ",\"type\":\"" + tp + "\"";
+                        if (!mn.empty()) s += ",\"min\":" + mn + ",\"max\":" + mx;
+                        return s + "}";
+                    };
+                    auto v3s = [](const Eigen::Vector3d& v) {
+                        return "[" + std::to_string(v(0)) + "," + std::to_string(v(1)) + "," + std::to_string(v(2)) + "]";
+                    };
+
+                    // BV: 0-4 front attrs, 5-9 back attrs, 10 front idx, 11 back idx
+                    std::string bvs =
+                        jBV(o_fp,fnv*12,34962) + "," + jBV(o_fn,fnv*12,34962) + "," +
+                        jBV(o_fu,fnv*8,34962) + "," + jBV(o_ff,fnv*4,34962) + "," +
+                        jBV(o_fs,fnv*4,34962) + "," +
+                        jBV(o_bp,bnv*12,34962) + "," + jBV(o_bn,bnv*12,34962) + "," +
+                        jBV(o_bu,bnv*8,34962) + "," + jBV(o_bf,bnv*4,34962) + "," +
+                        jBV(o_bs,bnv*4,34962) + "," +
+                        jBV(o_fi,fnf*12,34963) + "," + jBV(o_bi,bnf*12,34963);
+
+                    // Acc: 0-4 front, 5-9 back, 10 front idx, 11 back idx
+                    std::string accs =
+                        jAcc(0,5126,fnv,"VEC3",v3s(fmn),v3s(fmx)) + "," +
+                        jAcc(1,5126,fnv,"VEC3") + "," +
+                        jAcc(2,5126,fnv,"VEC2") + "," +
+                        jAcc(3,5126,fnv,"SCALAR") + "," +
+                        jAcc(4,5126,fnv,"SCALAR") + "," +
+                        jAcc(5,5126,bnv,"VEC3",v3s(bmn),v3s(bmx)) + "," +
+                        jAcc(6,5126,bnv,"VEC3") + "," +
+                        jAcc(7,5126,bnv,"VEC2") + "," +
+                        jAcc(8,5126,bnv,"SCALAR") + "," +
+                        jAcc(9,5126,bnv,"SCALAR") + "," +
+                        jAcc(10,5125,fnf*3,"SCALAR") + "," +
+                        jAcc(11,5125,bnf*3,"SCALAR");
+
+                    std::string json_str =
+                        "{\"asset\":{\"version\":\"2.0\",\"generator\":\"meshparam_bench\"},"
+                        "\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+                        "\"meshes\":[{\"primitives\":["
+                        "{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2,\"_FACE_ID\":3,\"_SEAM\":4},\"indices\":10,\"mode\":4},"
+                        "{\"attributes\":{\"POSITION\":5,\"NORMAL\":6,\"TEXCOORD_0\":7,\"_FACE_ID\":8,\"_SEAM\":9},\"indices\":11,\"mode\":4}"
+                        "]}],"
+                        "\"accessors\":[" + accs + "],"
+                        "\"bufferViews\":[" + bvs + "],"
+                        "\"buffers\":[{\"byteLength\":" + std::to_string(bin.size()) + "}]}";
+
+                    // Pad JSON to 4-byte alignment
+                    while (json_str.size() % 4) json_str += ' ';
+
+                    // Build GLB
+                    uint32_t totalSize = 12 + 8 + (uint32_t)json_str.size() + 8 + (uint32_t)bin.size();
+                    result.glb.clear();
+                    result.glb.reserve(totalSize);
+                    auto w32 = [&](uint32_t v) { result.glb.insert(result.glb.end(), (uint8_t*)&v, (uint8_t*)&v+4); };
+                    // Header
+                    result.glb.insert(result.glb.end(), {'g','l','T','F'});
+                    w32(2); w32(totalSize);
+                    // JSON chunk
+                    w32((uint32_t)json_str.size()); w32(0x4E4F534A);
+                    result.glb.insert(result.glb.end(), json_str.begin(), json_str.end());
+                    // BIN chunk
+                    w32((uint32_t)bin.size()); w32(0x004E4942);
+                    result.glb.insert(result.glb.end(), bin.begin(), bin.end());
+                }
                 did_split = true;
                 std::cerr << "[split] Combined: " << result.vertices << "v " << result.faces << "f" << std::endl;
             }

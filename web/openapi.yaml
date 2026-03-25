@@ -71,7 +71,7 @@ paths:
         | `zperp` | Orange | Other Z-perpendicular B-Rep edges |
         | `other` | Yellow | All remaining B-Rep edges |
 
-        Edge nodes are sorted by parametric coordinate along each OCC curve. Points are offset 0.1mm along the surface normal to avoid Z-fighting. Coordinates are in mm, right-handed (glTF convention).
+        Edge nodes are sorted by parametric coordinate along each OCC curve. Points are offset along the surface normal by 1/1000 of the max bounding box dimension to avoid Z-fighting. Coordinates are in mm, right-handed (glTF convention).
 
         ### Auto-Seam Detection
 
