@@ -110,14 +110,15 @@ python scripts/run_benchmark.py --subset disk --workers 1 --timeout 120
 - STEP files: `models/step/0627778.step`, `models/step/0618969.step`, `models/step/0617023B.step`
 - Original glTF: `models/glTF/` (cube, sphere, torus, teapot, Klein bottle, CGAL refs)
 - Benchmark: `models/benchmark/Obj_Files/` (Stein et al. 2022 dataset, 11,913 meshes)
-- Results: `benchmark_results/benchmark_raw.json`, `benchmark_cm_raw.json`
+- Results: `models/benchmark_results/benchmark_raw.json`, `benchmark_cm_raw.json`
 
 ## Folder Structure
 ```
 models/
-├── glTF/         Original tessellated meshes (.glb)
-├── step/         STEP CAD files for testing
-└── benchmark/    Stein et al. 2022 dataset (gitignored, large)
+├── glTF/               Original tessellated meshes (.glb)
+├── step/               STEP CAD files for testing
+├── benchmark/          Stein et al. 2022 dataset (gitignored, large)
+└── benchmark_results/  Benchmark run outputs (gitignored)
 ```
 
 ### Recovering benchmark data

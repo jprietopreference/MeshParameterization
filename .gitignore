@@ -21,10 +21,11 @@ web/node_modules/
 web/tests/
 web/test-results/
 
-# Benchmark data (too large for git)
+# Benchmark data and results (too large for git, see CLAUDE.md for recovery)
 benchmark/
 models/benchmark/
 benchmark_results/
+models/benchmark_results/
 
 # Generated/temporary mesh data
 data/

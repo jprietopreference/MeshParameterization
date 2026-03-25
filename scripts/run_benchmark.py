@@ -16,7 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCHMARK_DIR = os.path.join(ROOT, "models", "benchmark", "Obj_Files")
 NO_UVS_CUT = os.path.join(BENCHMARK_DIR, "No_UVs", "Cut")
 ARTIST_UVS_CUT = os.path.join(BENCHMARK_DIR, "Artist_UVs", "Cut")
-RESULTS_DIR = os.path.join(ROOT, "benchmark_results")
+RESULTS_DIR = os.path.join(ROOT, "models", "benchmark_results")
 SERVER = "http://localhost:8080"
 
 
