@@ -2,6 +2,7 @@
 // Runs multiple parameterization methods in parallel, picks the best result.
 
 #include "httplib.h"
+#include "logger.h"
 
 #include "meshparam/gltf_io.h"
 #include "meshparam/parameterizer.h"
@@ -1106,10 +1107,46 @@ int main(int argc, char* argv[]) {
     std::string occ_cli = "";
     std::string gmsh_cli = "";
     int threads = 8;
-
     std::string remesh_cli = "";
     std::string acis_cli = "";
     std::string benchmark_dir = "../benchmark/Obj_Files";
+    std::string log_path = "";
+
+    // Load config file if present (config.json next to executable or in CWD)
+    auto load_config_str = [](const std::string& json, const std::string& key) -> std::string {
+        auto pos = json.find("\"" + key + "\"");
+        if (pos == std::string::npos) return "";
+        pos = json.find(':', pos);
+        if (pos == std::string::npos) return "";
+        auto q1 = json.find('"', pos + 1);
+        if (q1 == std::string::npos) return "";
+        auto q2 = json.find('"', q1 + 1);
+        if (q2 == std::string::npos) return "";
+        return json.substr(q1 + 1, q2 - q1 - 1);
+    };
+    auto load_config_int = [](const std::string& json, const std::string& key, int def) -> int {
+        auto pos = json.find("\"" + key + "\"");
+        if (pos == std::string::npos) return def;
+        pos = json.find(':', pos);
+        if (pos == std::string::npos) return def;
+        return std::stoi(json.substr(pos + 1));
+    };
+    for (const char* cfg_path : {"config.json", "../config.json"}) {
+        std::ifstream cfg(cfg_path);
+        if (cfg.is_open()) {
+            std::string json((std::istreambuf_iterator<char>(cfg)), std::istreambuf_iterator<char>());
+            auto s = load_config_str(json, "web_root"); if (!s.empty()) web_root = s;
+            s = load_config_str(json, "gmsh_cli"); if (!s.empty()) gmsh_cli = s;
+            s = load_config_str(json, "occ_cli"); if (!s.empty()) occ_cli = s;
+            s = load_config_str(json, "log"); if (!s.empty()) log_path = s;
+            port = load_config_int(json, "port", port);
+            threads = load_config_int(json, "threads", threads);
+            std::cerr << "[config] Loaded from " << cfg_path << std::endl;
+            break;
+        }
+    }
+
+    // CLI args override config file
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--port" && i + 1 < argc) port = std::stoi(argv[++i]);
@@ -1120,7 +1157,15 @@ int main(int argc, char* argv[]) {
         if (arg == "--benchmark-dir" && i + 1 < argc) benchmark_dir = argv[++i];
         if (arg == "--remesh-cli" && i + 1 < argc) remesh_cli = argv[++i];
         if (arg == "--threads" && i + 1 < argc) threads = std::stoi(argv[++i]);
+        if (arg == "--log" && i + 1 < argc) log_path = argv[++i];
     }
+
+    // Initialize logger
+    if (!log_path.empty()) Logger::instance().init(log_path);
+
+    LOG_INFO("MeshParameterization server starting on port " + std::to_string(port));
+    if (!gmsh_cli.empty()) LOG_INFO("Gmsh CLI: " + gmsh_cli);
+    if (!occ_cli.empty()) LOG_INFO("OCC CLI: " + occ_cli);
 
     httplib::Server svr;
     svr.set_payload_max_length(100 * 1024 * 1024);
@@ -1139,12 +1184,47 @@ int main(int argc, char* argv[]) {
     });
 
     // --- Health ---
-    svr.Get("/api/health", [](const httplib::Request&, httplib::Response& res) {
-        res.set_content("{\"status\":\"ok\"}", "application/json");
+    svr.Get("/api/health", [&gmsh_cli](const httplib::Request&, httplib::Response& res) {
+        // Verify backend components are available
+        std::ostringstream json;
+        json << "{\"status\":\"ok\"";
+
+        // Check bench CLI
+        bool bench_ok = false;
+        {
+            char self_path[4096] = {};
+#ifdef _WIN32
+            GetModuleFileNameA(nullptr, self_path, sizeof(self_path));
+#endif
+            std::string self_dir(self_path);
+            auto pos = self_dir.find_last_of("\\/");
+            if (pos != std::string::npos) self_dir = self_dir.substr(0, pos + 1);
+            std::string bench = self_dir + "meshparam_bench.exe";
+            std::ifstream f(bench);
+            bench_ok = f.good();
+            json << ",\"bench_cli\":" << (bench_ok ? "true" : "false");
+        }
+
+        // Check Gmsh CLI
+        bool gmsh_ok = !gmsh_cli.empty();
+        if (gmsh_ok) {
+            // Try running 'python -c "import gmsh"' to verify
+            int rc = std::system("python -c \"import gmsh\" > nul 2>&1");
+            gmsh_ok = (rc == 0);
+        }
+        json << ",\"gmsh\":" << (gmsh_ok ? "true" : "false");
+
+        json << "}";
+
+        if (!bench_ok || !gmsh_ok) {
+            res.status = 503; // Service Unavailable
+        }
+        res.set_content(json.str(), "application/json");
     });
 
     // --- Broker: run all methods via subprocesses, pick best ---
     svr.Post("/api/parameterize", [&](const httplib::Request& req, httplib::Response& res) {
+        LOG_INFO("POST /api/parameterize (" + std::to_string(req.body.size()) + " bytes)");
         // Validate input
         if (req.body.empty()) {
             res.status = 400; res.set_content("{\"error\":\"Empty request body\"}", "application/json"); return;
@@ -1576,6 +1656,7 @@ int main(int argc, char* argv[]) {
 
     // --- STEP tessellation (Gmsh default, OCC fallback) ---
     svr.Post("/api/tessellate/step", [&occ_cli, &gmsh_cli](const httplib::Request& req, httplib::Response& res) {
+        LOG_INFO("POST /api/tessellate/step (" + std::to_string(req.body.size()) + " bytes)");
         // Validate STEP input
         if (req.body.empty()) {
             res.status = 400; res.set_content("{\"error\":\"Empty request body\"}", "application/json"); return;

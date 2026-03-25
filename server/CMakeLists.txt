@@ -254,6 +254,26 @@ if(MKL_FOUND)
     target_compile_definitions(meshparam_server PRIVATE HAS_COMPMAJOR=1)
 
     message(STATUS "CompMajor (Composite Majorization) enabled with MKL Pardiso")
+
+    # Auto-copy MKL DLLs to build dir after build
+    if(WIN32 AND MKL_CORE_LIB)
+        get_filename_component(_mkl_lib_dir "${MKL_CORE_LIB}" DIRECTORY)
+        get_filename_component(_mkl_bin_dir "${_mkl_lib_dir}/../bin" ABSOLUTE)
+        if(EXISTS "${_mkl_bin_dir}")
+            add_custom_command(TARGET meshparam_bench POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_mkl_bin_dir}/mkl_core.2.dll"
+                    "${_mkl_bin_dir}/mkl_intel_thread.2.dll"
+                    "${_mkl_bin_dir}/mkl_def.2.dll"
+                    "${_mkl_bin_dir}/mkl_avx2.2.dll"
+                    "${_mkl_bin_dir}/mkl_sequential.2.dll"
+                    $<TARGET_FILE_DIR:meshparam_bench>
+                COMMENT "Copying MKL DLLs to build directory"
+                COMMAND_ERROR_IS_FATAL ANY
+            )
+            message(STATUS "MKL DLLs will be auto-copied from ${_mkl_bin_dir}")
+        endif()
+    endif()
 else()
     message(STATUS "MKL not found — CompMajor disabled")
 endif()

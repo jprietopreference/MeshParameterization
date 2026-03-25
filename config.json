@@ -1,0 +1,7 @@
+{
+    "port": 8080,
+    "web_root": "web",
+    "gmsh_cli": "python scripts/occ_gmsh_pipeline.py",
+    "threads": 8,
+    "log": "meshparam.log"
+}
