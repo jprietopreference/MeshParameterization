@@ -1,0 +1,35 @@
+# Build artifacts
+build/
+build_wasm/
+*/build/
+server/build/
+
+# Git
+.git/
+.github/
+.githooks/
+
+# IDE
+.vscode/
+.cache/
+
+# Benchmark data (too large)
+models/benchmark/
+models/benchmark_results/
+benchmark/
+benchmark_results/
+
+# Node modules (rebuilt in container)
+web/node_modules/
+
+# Test artifacts
+tests/regression_report.html
+tests/coverage_html/
+.pytest_cache/
+.coverage
+
+# Generated files
+data/
+*.swp
+*.user
+debug_eigen.obj

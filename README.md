@@ -99,6 +99,17 @@ cmake --build build
 # CM (Composite Majorization) method will be disabled
 ```
 
+### Docker
+```bash
+# Build and run
+docker compose up -d
+
+# Or manually
+docker build -t meshparam .
+docker run -p 8080:8080 -v ./logs:/app/logs meshparam
+# Open http://localhost:8080
+```
+
 ## API
 
 - **Swagger UI**: http://localhost:8080/api/docs

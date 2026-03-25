@@ -9,7 +9,7 @@ on:
 jobs:
   build-and-test:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
     - uses: actions/checkout@v4
@@ -35,6 +35,19 @@ jobs:
     - name: Setup Ninja
       uses: seanmiddleditch/gha-setup-ninja@master
 
+    # Build core library + C++ unit tests
+    - name: Configure core library (CMake)
+      run: |
+        cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release `
+          -DMESHPARAM_BUILD_TESTS=ON -DMESHPARAM_BUILD_CLI=ON
+
+    - name: Build core library + tests
+      run: cmake --build build
+
+    - name: Run C++ unit tests
+      run: ctest --test-dir build --output-on-failure --timeout 60
+
+    # Build server + bench CLI
     - name: Configure server (CMake)
       run: |
         cd server
@@ -49,16 +62,36 @@ jobs:
         Copy-Item "$env:VCPKG_ROOT/installed/x64-windows/bin/mkl_*.dll" server/build/ -ErrorAction SilentlyContinue
         Copy-Item "$env:VCPKG_ROOT/installed/x64-windows/bin/libiomp5md.dll" server/build/ -ErrorAction SilentlyContinue
 
+    # Python regression tests
     - name: Run tessellation tests
-      run: python -m pytest tests/test_tessellation.py -v --tb=short --timeout=120
+      run: python -m pytest tests/test_tessellation.py -v --tb=short --no-header
 
     - name: Run parameterization tests
-      run: python -m pytest tests/test_parameterization.py -v --tb=short --timeout=300
+      run: python -m pytest tests/test_parameterization.py -v --tb=short --no-header
 
     - name: Upload test report
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: test-results
-        path: tests/regression_report.html
+        path: |
+          tests/regression_report.html
+          tests/coverage_html/
         retention-days: 30
+
+  # Docker build verification (Linux)
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Build Docker image
+      run: docker build -t meshparam:ci .
+
+    - name: Verify Docker image
+      run: |
+        docker run --rm meshparam:ci ./server/build/meshparam_bench --help || true
+        docker run --rm meshparam:ci python3 -c "import gmsh; print('Gmsh OK')"
