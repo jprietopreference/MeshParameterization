@@ -21,8 +21,11 @@ web/node_modules/
 web/tests/
 web/test-results/
 tests/regression_report.html
+tests/coverage_html/
 tests/.pytest_cache/
 .pytest_cache/
+.coverage
+htmlcov/
 
 # Benchmark data and results (too large for git, see CLAUDE.md for recovery)
 benchmark/

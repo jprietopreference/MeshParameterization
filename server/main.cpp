@@ -1183,6 +1183,22 @@ int main(int argc, char* argv[]) {
         res.status = 204;
     });
 
+    // Request/response logging
+    svr.set_logger([](const httplib::Request& req, const httplib::Response& res) {
+        // Skip noisy static file requests
+        if (req.path.find("/api/") != std::string::npos || res.status >= 400) {
+            LOG_INFO(req.method + " " + req.path + " -> " + std::to_string(res.status) +
+                     " (" + std::to_string(res.body.size()) + " bytes)");
+        }
+    });
+
+    svr.set_error_handler([](const httplib::Request& req, httplib::Response& res) {
+        LOG_ERROR("HTTP " + std::to_string(res.status) + " " + req.method + " " + req.path);
+        if (res.body.empty()) {
+            res.set_content("{\"error\":\"Internal server error\"}", "application/json");
+        }
+    });
+
     // --- Health ---
     svr.Get("/api/health", [&gmsh_cli](const httplib::Request&, httplib::Response& res) {
         // Verify backend components are available
@@ -1720,7 +1736,22 @@ int main(int argc, char* argv[]) {
     std::cout << "    POST /api/tessellate/step       (Gmsh default, OCC fallback)" << std::endl;
     std::cout << "    GET  /api/health" << std::endl;
     std::cout << "\nListening on http://localhost:" << port << std::endl;
+    LOG_INFO("Server listening on http://0.0.0.0:" + std::to_string(port));
+
+    // Graceful shutdown on Ctrl+C
+    static httplib::Server* g_svr = &svr;
+#ifdef _WIN32
+    SetConsoleCtrlHandler([](DWORD type) -> BOOL {
+        if (type == CTRL_C_EVENT || type == CTRL_CLOSE_EVENT || type == CTRL_SHUTDOWN_EVENT) {
+            LOG_INFO("Shutdown signal received");
+            if (g_svr) g_svr->stop();
+            return TRUE;
+        }
+        return FALSE;
+    }, TRUE);
+#endif
 
     svr.listen("0.0.0.0", port);
+    LOG_INFO("Server stopped");
     return 0;
 }

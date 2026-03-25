@@ -4,6 +4,46 @@ UV parameterization of triangle meshes from STEP/glTF input. Broker architecture
 
 **Target use case**: Window/door hardware parts (handles, hinges) from STEP files.
 
+## Architecture
+
+```mermaid
+graph LR
+    Browser[BabylonJS Frontend<br/>localhost:5199] -->|STEP upload| Server
+    Browser -->|GLB upload| Server
+
+    subgraph Server["C++ HTTP Server :8080"]
+        API["/api/tessellate/step<br/>/api/parameterize<br/>/api/health"]
+        Broker[Broker]
+    end
+
+    API -->|STEP| Gmsh["occ_gmsh_pipeline.py<br/>Gmsh + OCC"]
+    Gmsh -->|GLB with _FACE_ID<br/>_SEAM, edgeLines| API
+
+    API -->|GLB| Broker
+    Broker -->|subprocess| B1["meshparam_bench<br/>heat"]
+    Broker -->|subprocess| B2["meshparam_bench<br/>lscm"]
+    Broker -->|subprocess| B3["meshparam_bench<br/>cgal_arap"]
+    Broker -->|subprocess| B4["meshparam_bench<br/>cm (MKL)"]
+    Broker -->|subprocess| B5["... 4 more"]
+
+    B1 & B2 & B3 & B4 & B5 -->|JSON metrics| Broker
+    Broker -->|best result GLB| API
+    API -->|parameterized GLB| Browser
+```
+
+```mermaid
+graph TB
+    subgraph "STEP to GLB Pipeline"
+        S1[STEP file] --> S2[OCC import + heal]
+        S2 --> S3[Gmsh mesh<br/>curvature-adaptive]
+        S3 --> S4[OCC surface normals]
+        S4 --> S5[Auto-seam detection<br/>Z-perp edge loop]
+        S5 -->|seam found| S6[Split: front/back<br/>2 glTF primitives]
+        S5 -->|no seam| S7[Single primitive]
+        S6 & S7 --> S8[GLB + edgeLines extras]
+    end
+```
+
 ## Quick Start
 
 ```bash
