@@ -115,25 +115,20 @@ async function loadGlb(glbBuffer, applyChecker = false) {
                 renderMeshes.map(m => `${m.name}: ${m.getTotalVertices()}v ${m.getTotalIndices()/3}f vis=${m.isVisible}`));
 
             if (applyChecker) {
-                // After parameterization: apply checkerboard per primitive
-                // renderMeshes[0] = front (B/W), renderMeshes[1+] = back (pale red/grey)
-                for (let mi = 0; mi < renderMeshes.length; mi++) {
-                    const mesh = renderMeshes[mi];
-                    console.log(`[checker] prim ${mi}: ${mesh.name} ${mesh.getTotalVertices()}v vis=${mesh.isVisible}`);
-                    applyCheckerboard(mesh, mi > 0);
-                    mesh.isVisible = true;
-                }
+                // After parameterization: apply checkerboard and enable the checkbox
+                applyCheckerToAll(renderMeshes);
+                if ($('showParam')) { $('showParam').checked = true; $('showParam').disabled = false; }
             } else if (renderMeshes.length >= 2) {
                 // Before parameterization: color front/back differently
                 const frontMat = new BABYLON.StandardMaterial('frontMat', scene);
-                frontMat.diffuseColor = new BABYLON.Color3(1.0, 1.0, 0.7); // pale yellow
-                frontMat.emissiveColor = new BABYLON.Color3(0.3, 0.3, 0.2); // ambient fill
+                frontMat.diffuseColor = new BABYLON.Color3(1.0, 1.0, 0.7);
+                frontMat.emissiveColor = new BABYLON.Color3(0.3, 0.3, 0.2);
                 frontMat.backFaceCulling = false;
                 renderMeshes[0].material = frontMat;
 
                 const backMat = new BABYLON.StandardMaterial('backMat', scene);
-                backMat.diffuseColor = new BABYLON.Color3(0.7, 1.0, 0.7); // pale green
-                backMat.emissiveColor = new BABYLON.Color3(0.2, 0.3, 0.2); // ambient fill
+                backMat.diffuseColor = new BABYLON.Color3(0.7, 1.0, 0.7);
+                backMat.emissiveColor = new BABYLON.Color3(0.2, 0.3, 0.2);
                 backMat.backFaceCulling = false;
                 renderMeshes[1].material = backMat;
             }
@@ -238,6 +233,31 @@ function applyCheckerboard(mesh, isBack = false) {
     mat.specularColor = new BABYLON.Color3(0.05, 0.05, 0.05);
     mat.backFaceCulling = false;
     mesh.material = mat;
+}
+
+// Apply/remove checkerboard on all render meshes
+function applyCheckerToAll(meshes) {
+    if (!meshes) meshes = scene?.meshes.filter(m =>
+        m.getTotalVertices() > 0 && m.getVerticesData(BABYLON.VertexBuffer.NormalKind)) || [];
+    for (let mi = 0; mi < meshes.length; mi++) {
+        applyCheckerboard(meshes[mi], mi > 0);
+        meshes[mi].isVisible = true;
+    }
+}
+
+function applyPlainToAll(meshes) {
+    if (!meshes) meshes = scene?.meshes.filter(m =>
+        m.getTotalVertices() > 0 && m.getVerticesData(BABYLON.VertexBuffer.NormalKind)) || [];
+    for (let mi = 0; mi < meshes.length; mi++) {
+        const mat = new BABYLON.StandardMaterial(mi === 0 ? 'frontMat' : 'backMat', scene);
+        mat.diffuseColor = mi === 0 ? new BABYLON.Color3(1.0, 1.0, 0.7) : new BABYLON.Color3(0.7, 1.0, 0.7);
+        // Strong emissive base to reduce directional light gradients (same approach as checkerboard)
+        mat.emissiveColor = mi === 0 ? new BABYLON.Color3(0.55, 0.55, 0.4) : new BABYLON.Color3(0.4, 0.55, 0.4);
+        mat.specularColor = new BABYLON.Color3(0.05, 0.05, 0.05);
+        mat.backFaceCulling = false;
+        meshes[mi].material = mat;
+        meshes[mi].isVisible = true;
+    }
 }
 
 // --- Server API calls ---
@@ -909,7 +929,21 @@ $('textureSelect').addEventListener('change', () => {
 });
 
 $('showWireframe').addEventListener('change', () => {
-    if (currentMesh?.material) currentMesh.material.wireframe = $('showWireframe').checked;
+    const checked = $('showWireframe').checked;
+    scene?.meshes.forEach(m => {
+        if (m.getTotalVertices() > 0 && m.material && m.getVerticesData(BABYLON.VertexBuffer.NormalKind))
+            m.material.wireframe = checked;
+    });
+});
+
+$('showParam')?.addEventListener('change', async () => {
+    if ($('showParam').checked && state.resultGlb) {
+        // Reload parameterized mesh with checkerboard
+        await loadGlb(new Uint8Array(state.resultGlb), true);
+    } else if (state.inputGlb) {
+        // Reload original tessellated mesh (with correct OCC normals)
+        await loadGlb(new Uint8Array(state.inputGlb), false);
+    }
 });
 
 $('showSeams')?.addEventListener('change', () => {

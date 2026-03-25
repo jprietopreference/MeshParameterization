@@ -47,7 +47,11 @@ UV parameterization of triangle meshes from STEP/glTF input, targeting both nati
 - **Edge visualization**: `CreateLineSystem` from `edgeLines` JSON extras, parented to glTF root node (inherits LH Z-flip)
 - **Color coding**: Red=seam, Orange=Z-perp edges, Yellow=other B-Rep edges
 - **Split mesh display**: Pale yellow (front/Z+), pale green (back) before parameterization
+- **Checkerboard textures**: Front=B/W (`checker.png`), Back=pale red/grey (`checker_grey.png`), emissive texture for uniform shading
+- **Show parameterization toggle**: Checkbox switches between parameterized GLB (checkerboard) and original tessellated GLB (with correct OCC normals) — full mesh reload, not just material swap
+- **Vertex normals**: White lines (2% of bbox diagonal), toggle via checkbox
 - **Custom GLB attributes**: `_SEAM`, `_FACE_ID` — injected into BabylonJS via raw GLB parsing
+- **Depth precision**: Camera near/far clip tightened to scene bounds (1%-1000% of extent)
 - **Swagger UI**: `web/swagger.html` + `swagger-ui-dist` npm package → `/api/docs`
 
 ### Benchmark (`/scripts/run_benchmark.py`, `/benchmark`)
