@@ -107,6 +107,25 @@ python scripts/run_benchmark.py --subset disk --workers 1 --timeout 120
 ```
 
 ## Test Data
-- STEP files: `step/0627778.step`, `step/0618969.step`, `step/0617023B.step`
-- Benchmark: `benchmark/Obj_Files/` (Stein et al. 2022 dataset, 11,913 meshes)
+- STEP files: `models/step/0627778.step`, `models/step/0618969.step`, `models/step/0617023B.step`
+- Original glTF: `models/glTF/` (cube, sphere, torus, teapot, Klein bottle, CGAL refs)
+- Benchmark: `models/benchmark/Obj_Files/` (Stein et al. 2022 dataset, 11,913 meshes)
 - Results: `benchmark_results/benchmark_raw.json`, `benchmark_cm_raw.json`
+
+## Folder Structure
+```
+models/
+├── glTF/         Original tessellated meshes (.glb)
+├── step/         STEP CAD files for testing
+└── benchmark/    Stein et al. 2022 dataset (gitignored, large)
+```
+
+### Recovering benchmark data
+The benchmark dataset is too large for git. To set up locally:
+```bash
+# Download Stein et al. 2022 dataset from:
+# https://github.com/SteinEtAl/ParameterizationBenchmark
+# Extract Obj_Files/ into models/benchmark/
+mkdir -p models/benchmark
+# Place Obj_Files/ (with Artist_UVs/, No_UVs/, Full/, dataset_tags.csv) inside
+```

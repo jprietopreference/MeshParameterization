@@ -23,12 +23,18 @@ web/test-results/
 
 # Benchmark data (too large for git)
 benchmark/
+models/benchmark/
 benchmark_results/
 
-# Generated mesh data
-data/*_gmsh*.glb
+# Generated/temporary mesh data
+data/
 debug_eigen.obj
 cmake_options.texi
+
+# WASM (discarded)
+web/wasm/
+wasm/
+web/viewcube.css
 
 # Extern: only src/ of CompMajor is tracked
 Spatial/
@@ -38,6 +44,3 @@ extern/CompMajor/CMakeLists.txt
 extern/CompMajor/README.md
 extern/flip-free-parametrization/
 extern/gmsh/
-
-# Stale CSS (ViewCube is now BabylonJS native)
-web/viewcube.css
