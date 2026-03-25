@@ -4,7 +4,7 @@
 //
 // Usage: meshparam_bench <method> <input.obj|.glb> [--output-glb <path>] [--json <path>]
 //        meshparam_bench convert <input.obj> [--output-glb <path>]
-// Methods: heat, lscm, igl_arap, slim, stein_admm, cm,
+// Methods: heat, lscm, igl_arap, slim, cm,
 //          cgal_conformal, cgal_arap, cgal_authalic, convert
 
 #include "meshparam/gltf_io.h"
@@ -22,27 +22,7 @@
 #include <igl/readOBJ.h>
 #include "meshparam/benchmark_metrics.h"
 
-// Stein ADMM splitting
-#include "parametrization/constrained_qp.cpp"
-#include "parametrization/uv_to_jacobian.cpp"
-#include "parametrization/polar_decomposition.cpp"
-#include "parametrization/argmin_P.cpp"
-#include "parametrization/argmin_U.cpp"
-#include "parametrization/argmin_W.cpp"
-#include "parametrization/step_Lambda.cpp"
-#include "parametrization/lagrangian.cpp"
-#include "parametrization/lagrangian_error.cpp"
-#include "parametrization/rescale_penalties.cpp"
-#include "parametrization/rescale_b_mumin.cpp"
-#include "parametrization/rescale_h.cpp"
-#include "parametrization/termination_conditions.cpp"
-#include "parametrization/energy.cpp"
-#include "parametrization/quartic_polynomial.cpp"
-#include "parametrization/spd_quartic_polynomial.cpp"
-#include "parametrization/sqrtm.cpp"
-#include "parametrization/rotmat_sym_product.cpp"
-#include "parametrization/tutte.cpp"
-#include "parametrization/map_to.cpp"
+// Stein ADMM removed — replaced by CM
 
 #include "cgalparam/gltf_io.h"
 #include "cgalparam/cgal_parameterize.h"

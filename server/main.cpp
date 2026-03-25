@@ -18,28 +18,7 @@
 #include <igl/flipped_triangles.h>
 #include "meshparam/benchmark_metrics.h"
 
-// Stein ADMM splitting (flip-free parametrization)
-// Include .cpp files for template instantiation (header-only style)
-#include "parametrization/constrained_qp.cpp"
-#include "parametrization/uv_to_jacobian.cpp"
-#include "parametrization/polar_decomposition.cpp"
-#include "parametrization/argmin_P.cpp"
-#include "parametrization/argmin_U.cpp"
-#include "parametrization/argmin_W.cpp"
-#include "parametrization/step_Lambda.cpp"
-#include "parametrization/lagrangian.cpp"
-#include "parametrization/lagrangian_error.cpp"
-#include "parametrization/rescale_penalties.cpp"
-#include "parametrization/rescale_b_mumin.cpp"
-#include "parametrization/rescale_h.cpp"
-#include "parametrization/termination_conditions.cpp"
-#include "parametrization/energy.cpp"
-#include "parametrization/quartic_polynomial.cpp"
-#include "parametrization/spd_quartic_polynomial.cpp"
-#include "parametrization/sqrtm.cpp"
-#include "parametrization/rotmat_sym_product.cpp"
-#include "parametrization/tutte.cpp"
-#include "parametrization/map_to.cpp"
+// Stein ADMM splitting removed — crashed on ~50% of benchmark meshes, replaced by CM
 
 #include "cgalparam/gltf_io.h"
 #include "cgalparam/cgal_parameterize.h"
@@ -542,88 +521,7 @@ MethodResult run_igl_arap(const std::vector<uint8_t>& input_glb) {
     return r;
 }
 
-MethodResult run_stein(const std::vector<uint8_t>& input_glb) {
-    MethodResult r;
-    r.method = "stein_admm";
-    auto t0 = std::chrono::high_resolution_clock::now();
-    try {
-        auto mesh = meshparam::load_gltf_from_memory(input_glb);
-        Eigen::VectorXi bnd;
-        igl::boundary_loop(mesh.F, bnd);
-        if (bnd.size() == 0) { r.error = "needs boundary"; goto end_stein; }
-        {
-            // Init from Tutte (bijective) or LSCM fallback
-            Eigen::MatrixXd W;
-            try {
-                parametrization::tutte<false>(mesh.V, mesh.F, W);
-            } catch (...) {
-                W.resize(0, 0);
-            }
-
-            if (W.rows() == 0 || W.rows() != mesh.V.rows()) {
-                // Fallback to LSCM
-                Eigen::VectorXi b2(2); Eigen::MatrixXd bc2(2,2);
-                b2(0)=bnd(0); b2(1)=bnd(bnd.size()/2); bc2<<0,0,1,0;
-                igl::lscm(mesh.V, mesh.F, b2, bc2, W);
-                if (W.rows() == 0) { r.error = "init failed"; goto end_stein; }
-            }
-
-            // Check initial UV for flipped triangles
-            Eigen::VectorXi flipped = igl::flipped_triangles(W, mesh.F);
-            if (flipped.size() > 0) {
-                // Try Tutte specifically (guaranteed flip-free)
-                try {
-                    parametrization::tutte<false>(mesh.V, mesh.F, W);
-                    flipped = igl::flipped_triangles(W, mesh.F);
-                } catch (...) {}
-                if (flipped.size() > 0) {
-                    r.error = "Cannot produce flip-free init";
-                    goto end_stein;
-                }
-            }
-
-            // Check for degenerate triangles in UV space
-            {
-                Eigen::MatrixXd UV3(W.rows(), 3);
-                UV3.col(0) = W.col(0); UV3.col(1) = W.col(1); UV3.col(2).setZero();
-                Eigen::VectorXd areas;
-                igl::doublearea(UV3, mesh.F, areas);
-                if (areas.minCoeff() <= 0) {
-                    r.error = "Degenerate UV triangles in init";
-                    goto end_stein;
-                }
-            }
-
-            // Run Stein ADMM optimization (Symmetric Dirichlet energy)
-            {
-                parametrization::OptimizationOptions<double> opts;
-                opts.maxIter = 200;
-                bool success = parametrization::map_to<false, parametrization::EnergyType::SymmetricDirichlet>(
-                    mesh.V, mesh.F, W, opts);
-
-                if (!success) { r.error = "Stein ADMM optimization failed"; goto end_stein; }
-            }
-
-            for(int i=0;i<W.rows();++i) if(!std::isfinite(W(i,0))||!std::isfinite(W(i,1))){r.error="NaN UVs";goto end_stein;}
-
-            // Normalize
-            Eigen::Vector2d mn=W.colwise().minCoeff(), mx=W.colwise().maxCoeff();
-            for(int i=0;i<2;++i){double rng=mx(i)-mn(i);if(rng>1e-12)W.col(i)=(W.col(i).array()-mn(i))/rng;}
-
-            mesh.UV=W; mesh.compute_normals();
-            auto metrics=meshparam::compute_distortion(mesh.V,mesh.F,mesh.UV);
-            r.glb=meshparam::save_gltf_to_memory(mesh);
-            r.success=true; r.vertices=mesh.num_vertices(); r.faces=mesh.num_faces();
-            r.angle_mean=metrics.mean_angle_distortion; r.angle_max=metrics.max_angle_distortion;
-            r.area_mean=metrics.mean_area_distortion; r.area_std=metrics.std_area_distortion;
-            r.stretch_mean=metrics.mean_stretch; r.stretch_max=metrics.max_stretch;
-            fill_benchmark_metrics(r,mesh.V,mesh.F,mesh.UV);
-        }
-    } catch(const std::exception& e) { r.error=e.what(); }
-    end_stein:
-    { auto t1=std::chrono::high_resolution_clock::now(); r.elapsed_ms=std::chrono::duration<double,std::milli>(t1-t0).count(); }
-    return r;
-}
+// run_stein removed — Stein ADMM crashed on ~50% of meshes, replaced by CM
 
 MethodResult run_slim(const std::vector<uint8_t>& input_glb, int iterations = 50) {
     MethodResult r;
@@ -1740,6 +1638,18 @@ int main(int argc, char* argv[]) {
 
     // (Removed: /api/parameterize/step — Gmsh now tessellates STEP to GLB, then normal /api/parameterize is used)
 
+
+    // --- API Docs ---
+    svr.Get("/api/docs", [](const httplib::Request&, httplib::Response& res) {
+        res.set_redirect("/swagger.html");
+    });
+
+    svr.Get("/api/openapi.yaml", [&web_root](const httplib::Request&, httplib::Response& res) {
+        std::ifstream f(web_root + "/openapi.yaml", std::ios::binary);
+        if (!f) { res.status = 404; res.set_content("{\"error\":\"openapi.yaml not found\"}", "application/json"); return; }
+        std::string yaml((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        res.set_content(yaml, "text/yaml");
+    });
 
     // --- Static files ---
     svr.set_mount_point("/", web_root);

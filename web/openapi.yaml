@@ -1,0 +1,296 @@
+openapi: 3.0.3
+info:
+  title: Mesh Parameterization API
+  description: >
+    HTTP API for triangle mesh UV parameterization. Accepts glTF binary (.glb)
+    meshes and returns parameterized meshes with UV coordinates. Also supports
+    STEP-to-GLB tessellation via Gmsh or OpenCascade backends.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+paths:
+  /api/health:
+    get:
+      summary: Health check
+      description: Returns a simple status object to verify the server is running.
+      operationId: getHealth
+      responses:
+        "200":
+          description: Server is healthy.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+              example:
+                status: ok
+
+  /api/tessellate/step:
+    post:
+      summary: Tessellate a STEP file to GLB
+      description: >
+        Accepts a binary STEP file and returns a tessellated triangle mesh in
+        glTF binary (.glb) format. Uses Gmsh by default with OCC as fallback.
+      operationId: tessellateStep
+      parameters:
+        - name: tessellator
+          in: query
+          required: false
+          description: Tessellation backend to use.
+          schema:
+            type: string
+            enum: [gmsh, occ]
+            default: gmsh
+        - name: deflection
+          in: query
+          required: false
+          description: Chord deviation tolerance for tessellation (mm).
+          schema:
+            type: number
+            format: double
+            default: 1.0
+      requestBody:
+        required: true
+        description: Raw STEP file content.
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: Tessellated GLB mesh.
+          headers:
+            X-Tessellator:
+              description: The tessellation backend that was used.
+              schema:
+                type: string
+                example: gmsh
+          content:
+            model/gltf-binary:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Invalid or unreadable STEP data.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Tessellation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: No tessellator backend configured on the server.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: No tessellator configured
+
+  /api/parameterize:
+    post:
+      summary: Parameterize a GLB mesh
+      description: >
+        Accepts a glTF binary (.glb) triangle mesh and returns a parameterized
+        GLB with UV coordinates. When method is "auto" (default), the broker
+        runs all available methods in parallel and picks the best result based
+        on a composite quality score.
+      operationId: parameterize
+      parameters:
+        - name: method
+          in: query
+          required: false
+          description: >
+            Parameterization method. Use "auto" to let the broker pick the best
+            result from all methods.
+          schema:
+            type: string
+            enum:
+              - auto
+              - heat
+              - lscm
+              - igl_arap
+              - slim
+              - cgal_conformal
+              - cgal_arap
+              - cgal_authalic
+              - cm
+            default: auto
+      requestBody:
+        required: true
+        description: Raw GLB file content.
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: Parameterized GLB mesh with UV coordinates.
+          headers:
+            X-Method:
+              description: The parameterization method used for the returned result.
+              schema:
+                type: string
+                example: cgal_arap
+            X-Metrics:
+              description: >
+                JSON object with quality metrics for the selected method.
+              schema:
+                type: string
+              example: >
+                {"angle_mean":0.02,"angle_max":0.15,"area_mean":0.03,"stretch_mean":1.01,"score":0.85,"sym_dirichlet":1.12,"flipped_tris":0,"l2_area":0.04,"linf_area":0.08}
+            X-All-Methods:
+              description: >
+                JSON array with results and metrics from all attempted methods
+                (only present when method=auto).
+              schema:
+                type: string
+              example: >
+                [{"method":"cgal_arap","score":0.85,"metrics":{...}},{"method":"heat","score":0.72,"metrics":{...}}]
+            X-Session:
+              description: Session identifier for correlating requests.
+              schema:
+                type: string
+                example: abc123
+          content:
+            model/gltf-binary:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Invalid or unreadable GLB data.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: All parameterization methods failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/artist-uvs/{filename}:
+    get:
+      summary: Retrieve artist UV reference mesh
+      description: >
+        Returns a pre-made artist UV GLB for the given filename, if one exists
+        in the Artist_UVs benchmark directories (Cut/ and Uncut/).
+      operationId: getArtistUvs
+      parameters:
+        - name: filename
+          in: path
+          required: true
+          description: Mesh filename to look up (e.g. "bunny.glb").
+          schema:
+            type: string
+            example: bunny.glb
+      responses:
+        "200":
+          description: Artist UV GLB mesh.
+          content:
+            model/gltf-binary:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: No artist UV found for the given filename.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Artist UV not found for bunny.glb
+        "500":
+          description: Server error while converting or reading the file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/docs:
+    get:
+      summary: API documentation UI
+      description: Redirects to the Swagger UI page.
+      operationId: getDocs
+      responses:
+        "302":
+          description: Redirect to /swagger.html
+
+  /api/openapi.yaml:
+    get:
+      summary: OpenAPI specification
+      description: Returns this OpenAPI specification in YAML format.
+      operationId: getOpenApiSpec
+      responses:
+        "200":
+          description: The OpenAPI 3.0 specification.
+          content:
+            text/yaml:
+              schema:
+                type: string
+
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+      required:
+        - error
+      example:
+        error: Something went wrong
+
+    Metrics:
+      type: object
+      description: Quality metrics for a parameterization result.
+      properties:
+        angle_mean:
+          type: number
+          format: double
+          description: Mean angle distortion.
+        angle_max:
+          type: number
+          format: double
+          description: Maximum angle distortion.
+        area_mean:
+          type: number
+          format: double
+          description: Mean area distortion.
+        stretch_mean:
+          type: number
+          format: double
+          description: Mean stretch factor.
+        score:
+          type: number
+          format: double
+          description: Composite quality score (higher is better).
+        sym_dirichlet:
+          type: number
+          format: double
+          description: Symmetric Dirichlet energy.
+        flipped_tris:
+          type: integer
+          description: Number of flipped (inverted) triangles in UV space.
+        l2_area:
+          type: number
+          format: double
+          description: L2 area distortion.
+        linf_area:
+          type: number
+          format: double
+          description: L-infinity area distortion.
