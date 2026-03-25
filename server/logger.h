@@ -13,21 +13,21 @@
 
 class MeshParamLogger {
 public:
-    enum Level { DEBUG, INFO, WARN, ERROR };
+    enum Level { LVL_DEBUG, LVL_INFO, LVL_WARN, LVL_ERROR };
 
-    static Logger& instance() {
-        static Logger inst;
+    static MeshParamLogger& instance() {
+        static MeshParamLogger inst;
         return inst;
     }
 
-    void init(const std::string& log_path = "", Level min_level = INFO) {
+    void init(const std::string& log_path = "", Level min_level = LVL_INFO) {
         std::lock_guard<std::mutex> lock(mtx_);
         min_level_ = min_level;
         if (!log_path.empty()) {
             file_.open(log_path, std::ios::app);
             if (file_.is_open()) {
                 log_path_ = log_path;
-                log(INFO, "Logger initialized: " + log_path);
+                log(LVL_INFO, "Logger initialized: " + log_path);
             }
         }
     }
@@ -56,7 +56,7 @@ public:
         std::string line = oss.str();
 
         // stdout (always)
-        (level >= WARN ? std::cerr : std::cout) << line << std::endl;
+        (level >= LVL_WARN ? std::cerr : std::cout) << line << std::endl;
 
         // File (if open)
         if (file_.is_open()) {
@@ -80,21 +80,21 @@ private:
     std::ofstream file_;
     std::string log_path_;
     std::mutex mtx_;
-    Level min_level_ = INFO;
+    Level min_level_ = LVL_INFO;
     int line_count_ = 0;
 
     static const char* level_str(Level l) {
         switch (l) {
-            case DEBUG: return "DEBUG";
-            case INFO:  return "INFO ";
-            case WARN:  return "WARN ";
-            case ERROR: return "ERROR";
+            case LVL_DEBUG: return "DEBUG";
+            case LVL_INFO:  return "INFO ";
+            case LVL_WARN:  return "WARN ";
+            case LVL_ERROR: return "ERROR";
         }
         return "?????";
     }
 };
 
-#define LOG_DEBUG(msg) MeshParamLogger::instance().log(MeshParamLogger::DEBUG, msg)
-#define LOG_INFO(msg)  MeshParamLogger::instance().log(MeshParamLogger::INFO, msg)
-#define LOG_WARN(msg)  MeshParamLogger::instance().log(MeshParamLogger::WARN, msg)
-#define LOG_ERROR(msg) MeshParamLogger::instance().log(MeshParamLogger::ERROR, msg)
+#define LOG_DEBUG(msg) MeshParamLogger::instance().log(MeshParamLogger::LVL_DEBUG, msg)
+#define LOG_INFO(msg)  MeshParamLogger::instance().log(MeshParamLogger::LVL_INFO, msg)
+#define LOG_WARN(msg)  MeshParamLogger::instance().log(MeshParamLogger::LVL_WARN, msg)
+#define LOG_ERROR(msg) MeshParamLogger::instance().log(MeshParamLogger::LVL_ERROR, msg)
