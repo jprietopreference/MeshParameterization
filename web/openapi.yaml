@@ -36,7 +36,88 @@ paths:
       summary: Tessellate a STEP file to GLB
       description: >
         Accepts a binary STEP file and returns a tessellated triangle mesh in
-        glTF binary (.glb) format. Uses Gmsh by default with OCC as fallback.
+        glTF binary (.glb) format. Uses Gmsh + OpenCascade pipeline.
+
+
+        ## GLB Output Structure
+
+
+        ### Primitives
+
+        The output GLB contains 1 or 2 triangle primitives (mode=4):
+
+        - **1 primitive**: No auto-seam detected; the full mesh as a single part.
+
+        - **2 primitives**: Auto-seam detected (Z-perpendicular B-Rep edge loop found).
+          Primitive 0 = front/top faces (Z+ normals), Primitive 1 = back/bottom faces.
+          The split is topological (flood-fill on OCC face adjacency, seam edges as barrier),
+          not geometric (not centroid-Z classification).
+
+
+        ### Per-Vertex Attributes
+
+        Each triangle primitive has these vertex attributes:
+
+        - `POSITION` (VEC3, float32): Vertex position in mm.
+
+        - `NORMAL` (VEC3, float32): Surface normal queried from the OCC B-Rep surface
+          at the parametric position of each mesh node. Not interpolated from triangulation —
+          comes directly from the analytical CAD surface. Vertices are split at B-Rep face
+          boundaries so normals are sharp across face edges.
+
+        - `_FACE_ID` (SCALAR, float32): OCC B-Rep face index for each vertex.
+          Vertices on the same B-Rep face share the same value. Used to identify
+          face boundaries in the viewer.
+
+        - `_SEAM` (SCALAR, float32): 1.0 for vertices on the auto-seam loop, 0.0 otherwise.
+          Only present when a Z-perpendicular seam was detected.
+
+
+        ### Node Extras — B-Rep Edge Lines
+
+        The glTF node (nodes[0]) contains an `extras.edgeLines` object with B-Rep edge
+        polyline data for visualization. Each key maps to a flat array of 3D point pairs
+        `[x0,y0,z0, x1,y1,z1, ...]` representing line segments along the B-Rep curves.
+        Points are offset 0.05mm along the surface normal to avoid Z-fighting.
+
+        - `edgeLines.seam` (array of float): Line segments along the auto-seam loop
+          (the longest Z-perpendicular B-Rep edge loop). Displayed in **red**.
+
+        - `edgeLines.zperp` (array of float): Line segments along other Z-perpendicular
+          B-Rep edges (not the seam). Displayed in **orange**.
+
+        - `edgeLines.other` (array of float): Line segments along all remaining B-Rep
+          edges. Displayed in **yellow**.
+
+        Edge nodes are sorted by parametric coordinate along each OCC curve, so consecutive
+        point pairs form a proper polyline (no random connections). Coordinates are in the
+        same space as POSITION (mm, right-handed). The BabylonJS viewer parents these lines
+        to the glTF root node to inherit the left-handed Z-flip transform.
+
+
+        ### Auto-Seam Detection
+
+        The pipeline automatically finds the longest closed loop of Z-perpendicular B-Rep
+        edges (all edge endpoints at the same Z within 0.5mm tolerance). If found and it
+        divides the mesh into two balanced halves (neither side < 10% of faces), it is used
+        as the seam for splitting. Among equal-length candidates, the loop at minimum Z is
+        chosen. The seam loop is stored in `edgeLines.seam` and marked with `_SEAM=1.0`
+        on the corresponding mesh vertices.
+
+
+        ### Meshing Parameters
+
+        - Chord deviation target: configurable via `deflection` parameter (default 1mm).
+
+        - Curvature-adaptive: `MeshSizeFromCurvature = N` elements per 2π.
+
+        - Min/max edge size derived from bounding box extent.
+
+        - Gmsh Frontal-Delaunay algorithm (Algorithm 6).
+
+        - OCC shape healing applied before meshing.
+
+        - Auto unit detection: meters→mm, inches→mm scaling.
       operationId: tessellateStep
       parameters:
         - name: tessellator
@@ -105,7 +186,55 @@ paths:
         Accepts a glTF binary (.glb) triangle mesh and returns a parameterized
         GLB with UV coordinates. When method is "auto" (default), the broker
         runs all available methods in parallel and picks the best result based
-        on a composite quality score.
+        on a composite quality score (Symmetric Dirichlet energy + flip count).
+
+
+        ## GLB Output Structure
+
+
+        The parameterized GLB preserves the input structure (1 or 2 primitives)
+        and adds:
+
+        - `TEXCOORD_0` (VEC2, float32): UV coordinates from the winning method,
+          normalized to [0,1] range.
+
+        - `_SEAM` (SCALAR, float32): Seam vertices (preserved from input).
+
+        - `NORMAL` and `_FACE_ID` are preserved from the input GLB.
+
+        - `extras.edgeLines` is NOT present in the parameterized output (cached
+          client-side from the tessellation step).
+
+
+        ## Split Mesh Handling
+
+        When the input has 2 primitives (front/back split from auto-seam):
+
+        - Primitive 0 (front): parameterized with the full broker (all methods compete).
+
+        - Primitive 1 (back): parameterized with LSCM only (fast, reliable, back face
+          is less visually important).
+
+        - Results are combined into a single output GLB.
+
+
+        ## Available Methods
+
+        - `heat`: Heat-geodesic MDS (O(n²), limit ~5K vertices).
+
+        - `lscm`: Least Squares Conformal Maps (fastest, robust).
+
+        - `igl_arap`: As-Rigid-As-Possible (libigl).
+
+        - `slim`: Scalable Locally Injective Maps (Symmetric Dirichlet optimizer).
+
+        - `cgal_conformal`: CGAL Discrete Conformal.
+
+        - `cgal_arap`: CGAL ARAP (best reliability + quality balance).
+
+        - `cgal_authalic`: CGAL Discrete Authalic.
+
+        - `cm`: Composite Majorization (Newton-based, best quality when converges).
       operationId: parameterize
       parameters:
         - name: method

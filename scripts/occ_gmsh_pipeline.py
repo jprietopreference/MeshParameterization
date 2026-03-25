@@ -523,7 +523,10 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
         seam_data = SEAM.tobytes()
 
         # Build edge line data as JSON extras (BabylonJS doesn't handle line primitives well)
-        # Use positions from edge_node_coords (captured from Gmsh before finalize)
+        # Offset each edge point 0.05mm along the vertex normal to avoid Z-fighting
+        EDGE_OFFSET = 0.05  # mm
+        all_pos_arr = V.reshape(-1, 3)
+        all_nrm_arr = N.reshape(-1, 3)
         edge_lines = {}  # "seam" / "zperp" / "other" -> [x,y,z,x,y,z,...]
         etype_keys = {1: "seam", 2: "zperp", 3: "other"}
         for etype in [1, 2, 3]:
@@ -533,10 +536,18 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
                     continue
                 coords = edge_node_coords[occ_tag]
                 for i in range(len(node_list) - 1):
-                    pa = coords[node_list[i]]
-                    pb = coords[node_list[i + 1]]
-                    pts.extend([round(pa[0]*scale,4), round(pa[1]*scale,4), round(pa[2]*scale,4),
-                                round(pb[0]*scale,4), round(pb[1]*scale,4), round(pb[2]*scale,4)])
+                    for nt in [node_list[i], node_list[i + 1]]:
+                        raw = coords[nt]
+                        px, py, pz = raw[0] * scale, raw[1] * scale, raw[2] * scale
+                        # Look up vertex normal from GLB data
+                        if nt in global_node_to_glb:
+                            gi = global_node_to_glb[nt]
+                            nx, ny, nz = all_nrm_arr[gi]
+                        else:
+                            nx, ny, nz = 0, 0, 0
+                        pts.extend([round(px + nx * EDGE_OFFSET, 4),
+                                    round(py + ny * EDGE_OFFSET, 4),
+                                    round(pz + nz * EDGE_OFFSET, 4)])
             if pts:
                 edge_lines[etype_keys[etype]] = pts
 

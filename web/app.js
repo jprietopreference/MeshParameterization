@@ -618,7 +618,7 @@ function showSeamLines() {
         lineSys.color = new BABYLON.Color3(0.3, 0.6, 1.0);
         lineSys.alpha = 0.6;
         lineSys.isPickable = false;
-        lineSys.material.zOffset = -2;
+        // No zOffset needed — edges are offset 0.05mm along surface normal in the pipeline
         if (lastGlTFRoot) lineSys.parent = lastGlTFRoot;
         lineSys.enableEdgesRendering();
         lineSys.edgesWidth = 4.0;
@@ -686,7 +686,7 @@ function drawEdgeLinesFromExtras(container, parentNode) {
         const lineSys = BABYLON.MeshBuilder.CreateLineSystem(`_edges_${key}`, { lines }, scene);
         lineSys.color = colorMap[key] || new BABYLON.Color3(1, 1, 1);
         lineSys.isPickable = false;
-        lineSys.material.zOffset = -2;
+        // No zOffset needed — edges are offset 0.05mm along surface normal in the pipeline
         // Parent to glTF root so edge lines inherit the same transform (LH Z-flip)
         if (parentNode) lineSys.parent = parentNode;
         console.log(`[edges] ${key}: ${lines.length} segments`);
