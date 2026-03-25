@@ -1,0 +1,19 @@
+#!/bin/bash
+# Pre-commit hook: run regression tests before allowing commit
+# Skip with: git commit --no-verify
+
+echo "Running regression tests..."
+python -m pytest tests/test_tessellation.py tests/test_parameterization.py -v --tb=short -q 2>&1
+rc=$?
+
+if [ $rc -ne 0 ]; then
+    echo ""
+    echo "COMMIT BLOCKED: regression tests failed."
+    echo "Fix the failing tests or update baselines with:"
+    echo "  UPDATE_BASELINE=1 python -m pytest tests/ -v"
+    echo "To skip: git commit --no-verify"
+    exit 1
+fi
+
+echo "All tests passed."
+exit 0
