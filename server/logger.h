@@ -76,7 +76,7 @@ public:
     }
 
 private:
-    Logger() = default;
+    MeshParamLogger() = default;
     std::ofstream file_;
     std::string log_path_;
     std::mutex mtx_;

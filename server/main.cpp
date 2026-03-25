@@ -1162,7 +1162,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Initialize logger
-    if (!log_path.empty()) Logger::instance().init(log_path);
+    if (!log_path.empty()) MeshParamLogger::instance().init(log_path);
 
     LOG_INFO("MeshParameterization server starting on port " + std::to_string(port));
     if (!gmsh_cli.empty()) LOG_INFO("Gmsh CLI: " + gmsh_cli);
