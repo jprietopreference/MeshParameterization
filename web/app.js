@@ -330,6 +330,9 @@ $('fileInput').addEventListener('change', async (e) => {
     const ext = file.name.split('.').pop().toLowerCase();
     setStatus('Loading...', 'working');
     clearMetrics();
+    // Clear cached edge lines from previous file
+    lastEdgeLines = null;
+    lastGlTFRoot = null;
 
     try {
         const buffer = await file.arrayBuffer();
