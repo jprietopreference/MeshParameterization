@@ -11,7 +11,7 @@
 #include <string>
 #include <iomanip>
 
-class Logger {
+class MeshParamLogger {
 public:
     enum Level { DEBUG, INFO, WARN, ERROR };
 
@@ -94,7 +94,7 @@ private:
     }
 };
 
-#define LOG_DEBUG(msg) Logger::instance().log(Logger::DEBUG, msg)
-#define LOG_INFO(msg)  Logger::instance().log(Logger::INFO, msg)
-#define LOG_WARN(msg)  Logger::instance().log(Logger::WARN, msg)
-#define LOG_ERROR(msg) Logger::instance().log(Logger::ERROR, msg)
+#define LOG_DEBUG(msg) MeshParamLogger::instance().log(MeshParamLogger::DEBUG, msg)
+#define LOG_INFO(msg)  MeshParamLogger::instance().log(MeshParamLogger::INFO, msg)
+#define LOG_WARN(msg)  MeshParamLogger::instance().log(MeshParamLogger::WARN, msg)
+#define LOG_ERROR(msg) MeshParamLogger::instance().log(MeshParamLogger::ERROR, msg)
