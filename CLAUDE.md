@@ -9,20 +9,23 @@ UV parameterization of triangle meshes from STEP/glTF input, targeting both nati
 ## Architecture
 
 ### Server (`/server`)
-- **HTTP API** (`main.cpp`): `/api/tessellate/step`, `/api/parameterize`, `/api/health`
+- **HTTP API** (`main.cpp`): `/api/tessellate/step`, `/api/parameterize`, `/api/health`, `/api/docs` (Swagger UI)
+- **OpenAPI spec**: `web/openapi.yaml` — full documentation of all endpoints and GLB metadata
 - **Broker**: spawns `meshparam_bench.exe` subprocesses per method (process isolation — crashes don't kill the server)
 - **8 methods**: heat, lscm, igl_arap, slim, cgal_conformal, cgal_arap, cgal_authalic, cm (Composite Majorization)
 - **CLI tools**: `meshparam_bench.exe <method> <input.obj|.glb>` — self-contained per-method parameterizer
 - **Dependencies**: Eigen, libigl, CGAL (vcpkg), tinygltf, Spectra, Intel MKL (for CM/Pardiso)
+- **MKL DLLs**: Must be in `server/build/` (copy from `C:/vcpkg/installed/x64-windows/bin/mkl_*.dll`)
 
 ### Gmsh Pipeline (`/scripts/occ_gmsh_pipeline.py`)
 - **STEP → GLB**: OCC import → heal → Gmsh isotropic meshing → OCC normals → B-Rep attributes → GLB
 - **Chord deviation target**: 1mm (curvature-adaptive, `MeshSizeFromCurvature`)
 - **Auto-seam**: Finds longest Z-perpendicular B-Rep edge loop, splits mesh into front/back at CAD level
-- **Split by topology**: Flood-fill from OCC face adjacency graph, seam edges as barrier
-- **B-Rep edge visualization**: Edge polylines stored as JSON extras in GLB node (`edgeLines: {seam, zperp, other}`)
-- **Edge node ordering**: Sorted by parametric coordinate along OCC curves (prevents random connections)
-- **Output**: 1-2 triangle primitives (front/back) + `edgeLines` extras with 3D position pairs per edge type
+- **Split by topology**: Flood-fill from OCC face adjacency graph, seam edges as barrier → 2 glTF primitives
+- **B-Rep edge visualization**: Edge polylines in GLB node extras (`edgeLines: {seam, zperp, other}`)
+- **Edge offset**: 0.1mm along surface normal to avoid Z-fighting
+- **Edge node ordering**: Sorted by parametric coordinate along OCC curves
+- **Output**: 1-2 triangle primitives (front/back) sharing one vertex buffer + `edgeLines` JSON extras
 
 ### Heat-Geodesic Parameterizer (`/src`, `/include/meshparam`)
 - **Pipeline**: Laplace-Beltrami + Mass matrix → Heat equation → Normalized flux → Poisson solve → MDS eigendecomposition → UV coords
@@ -34,17 +37,18 @@ UV parameterization of triangle meshes from STEP/glTF input, targeting both nati
 - **Seam cut**: BFS geodesic (fallback when no auto-seam), or auto-seam from Z-perp loop
 
 ### Composite Majorization (`/extern/CompMajor`)
-- **Algorithm**: Newton-based Symmetric Dirichlet optimizer (Stein et al.)
+- **Algorithm**: Newton-based Symmetric Dirichlet optimizer
 - **Dependencies**: Intel MKL (Pardiso sparse solver)
 - **Best quality** when it converges (99.4% zero-flip), 86% success rate
 
 ### Frontend (`/web`)
 - **BabylonJS** viewer with checkerboard texture, seam visualization, B-Rep face edges
-- **ViewCube**: Separate BabylonJS canvas overlay (top-right), face/edge/corner picking, ortho/perspective toggle
-- **Edge visualization**: `CreateLineSystem` from JSON extras, parented to glTF root node (LH Z-flip)
+- **ViewCube**: Separate BabylonJS engine on overlay canvas (200x200, top-right), face/edge/corner picking, ortho/perspective toggle, animated transitions
+- **Edge visualization**: `CreateLineSystem` from `edgeLines` JSON extras, parented to glTF root node (inherits LH Z-flip)
 - **Color coding**: Red=seam, Orange=Z-perp edges, Yellow=other B-Rep edges
 - **Split mesh display**: Pale yellow (front/Z+), pale green (back) before parameterization
-- **Custom GLB attributes**: `_SEAM` (per-vertex float), `_FACE_ID` (per-vertex float) — injected via raw GLB parsing
+- **Custom GLB attributes**: `_SEAM`, `_FACE_ID` — injected into BabylonJS via raw GLB parsing
+- **Swagger UI**: `web/swagger.html` + `swagger-ui-dist` npm package → `/api/docs`
 
 ### Benchmark (`/scripts/run_benchmark.py`, `/benchmark`)
 - **Dataset**: Stein et al. 2022, 4,826 disk-topology meshes
@@ -68,15 +72,19 @@ UV parameterization of triangle meshes from STEP/glTF input, targeting both nati
 - **Normals from OCC faces**: queried at parametric positions via `gmsh.model.getNormal()`
 - **All meshes in mm**: STEP files auto-detected and scaled at import
 - **Process isolation**: Each parameterization method runs as subprocess — crashes don't affect broker
-- **BabylonJS left-handed**: glTF loader negates Z; edge lines must be parented to glTF root node
+- **BabylonJS left-handed**: glTF loader negates Z; edge lines parented to glTF root node for correct transform
 - **Edge data as JSON extras**: Not glTF line primitives (BabylonJS doesn't handle mixed primitives well)
-- **Auto-seam at CAD level**: Split OCC faces into front/back groups before meshing (not post-tessellation splitting)
+- **Edge normal offset**: 0.1mm along surface normal avoids Z-fighting without depth bias hacks
+- **Auto-seam at CAD level**: Split OCC faces into front/back groups before meshing (not post-tessellation)
+- **Stein ADMM removed**: Crashed on ~50% of meshes, replaced by CM which is strictly better
 
 ## Build Commands
 
 ```bash
 # Server + bench CLI (native, requires VS2022 + vcpkg + MKL)
 cd server && cmake -G Ninja -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake && cmake --build build
+# Copy MKL DLLs after build:
+cp C:/vcpkg/installed/x64-windows/bin/mkl_*.dll server/build/
 
 # CGAL (WASM-compatible, no GMP)
 cd cgal_param && cmake -G Ninja -B build && cmake --build build
@@ -86,6 +94,9 @@ cd web && npx vite  # → http://localhost:5199
 
 # Run server
 server/build/meshparam_server.exe --port 8080 --web-root web --gmsh-cli "python scripts/occ_gmsh_pipeline.py"
+
+# Swagger docs
+# → http://localhost:8080/api/docs
 
 # Benchmark (CLI, process-isolated)
 python scripts/run_benchmark.py --subset disk --workers 1 --timeout 120
