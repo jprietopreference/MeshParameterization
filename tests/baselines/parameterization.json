@@ -1,0 +1,1082 @@
+{
+  "0617023B.step:heat": {
+    "success": true,
+    "sym_dirichlet": 53884400.0,
+    "flipped_tris": 1260,
+    "angle_mean": 41.89,
+    "area_mean": 1.054,
+    "elapsed_ms": 213.2,
+    "error": ""
+  },
+  "0617023B.step:lscm": {
+    "success": true,
+    "sym_dirichlet": 1e+18,
+    "flipped_tris": 0,
+    "angle_mean": 111.14,
+    "area_mean": 1,
+    "elapsed_ms": 11.3,
+    "error": ""
+  },
+  "0617023B.step:igl_arap": {
+    "success": false,
+    "sym_dirichlet": -1,
+    "flipped_tris": -1,
+    "angle_mean": -1,
+    "area_mean": -1,
+    "elapsed_ms": -1,
+    "error": "needs boundary (cut failed)"
+  },
+  "0617023B.step:slim": {
+    "success": false,
+    "sym_dirichlet": -1,
+    "flipped_tris": -1,
+    "angle_mean": -1,
+    "area_mean": -1,
+    "elapsed_ms": -1,
+    "error": "SLIM: mesh still closed after cut attempt"
+  },
+  "0617023B.step:cgal_conformal": {
+    "success": true,
+    "sym_dirichlet": 1714170000.0,
+    "flipped_tris": 12,
+    "angle_mean": 80.55,
+    "area_mean": 29.935,
+    "elapsed_ms": 2.0,
+    "error": ""
+  },
+  "0617023B.step:cgal_arap": {
+    "success": true,
+    "sym_dirichlet": 911.765,
+    "flipped_tris": 0,
+    "angle_mean": 75.84,
+    "area_mean": 3.444,
+    "elapsed_ms": 17.1,
+    "error": ""
+  },
+  "0617023B.step:cgal_authalic": {
+    "success": true,
+    "sym_dirichlet": 414532000000.0,
+    "flipped_tris": 121,
+    "angle_mean": 81.06,
+    "area_mean": 29.865,
+    "elapsed_ms": 2.0,
+    "error": ""
+  },
+  "0617023B.step:cm": {
+    "success": false,
+    "sym_dirichlet": -1,
+    "flipped_tris": -1,
+    "angle_mean": -1,
+    "area_mean": -1,
+    "elapsed_ms": -1,
+    "error": "CM requires mesh with boundary"
+  },
+  "0618969.step:heat": {
+    "success": true,
+    "sym_dirichlet": 37518800000.0,
+    "flipped_tris": 1076,
+    "angle_mean": 62.49,
+    "area_mean": 659.771,
+    "elapsed_ms": 180.7,
+    "error": ""
+  },
+  "0618969.step:lscm": {
+    "success": true,
+    "sym_dirichlet": 1e+18,
+    "flipped_tris": 0,
+    "angle_mean": 105.51,
+    "area_mean": 1,
+    "elapsed_ms": 9.8,
+    "error": ""
+  },
+  "0618969.step:igl_arap": {
+    "success": true,
+    "sym_dirichlet": 1749140000.0,
+    "flipped_tris": 838,
+    "angle_mean": 55.84,
+    "area_mean": 2.727,
+    "elapsed_ms": 60.1,
+    "error": ""
+  },
+  "0618969.step:slim": {
+    "success": true,
+    "sym_dirichlet": 4813810000000.0,
+    "flipped_tris": 1105,
+    "angle_mean": 45.54,
+    "area_mean": 2.652,
+    "elapsed_ms": 389.1,
+    "error": ""
+  },
+  "0618969.step:cgal_conformal": {
+    "success": true,
+    "sym_dirichlet": 92402100000000.0,
+    "flipped_tris": 640,
+    "angle_mean": 93.27,
+    "area_mean": 9520.19,
+    "elapsed_ms": 7.5,
+    "error": ""
+  },
+  "0618969.step:cgal_arap": {
+    "success": true,
+    "sym_dirichlet": 9297400000000.0,
+    "flipped_tris": 521,
+    "angle_mean": 61.93,
+    "area_mean": 7.964,
+    "elapsed_ms": 251.7,
+    "error": ""
+  },
+  "0618969.step:cgal_authalic": {
+    "success": true,
+    "sym_dirichlet": 214621000000000.0,
+    "flipped_tris": 1143,
+    "angle_mean": 106.13,
+    "area_mean": 1490.61,
+    "elapsed_ms": 7.8,
+    "error": ""
+  },
+  "0618969.step:cm": {
+    "success": false,
+    "sym_dirichlet": -1,
+    "flipped_tris": -1,
+    "angle_mean": -1,
+    "area_mean": -1,
+    "elapsed_ms": -1,
+    "error": "CM: Newton step failed at iteration 0"
+  },
+  "0627778.step:heat": {
+    "success": true,
+    "sym_dirichlet": 678284000.0,
+    "flipped_tris": 1438,
+    "angle_mean": 51.27,
+    "area_mean": 1.241,
+    "elapsed_ms": 242.0,
+    "error": ""
+  },
+  "0627778.step:lscm": {
+    "success": true,
+    "sym_dirichlet": 254549,
+    "flipped_tris": 0,
+    "angle_mean": 2.78,
+    "area_mean": 0.923,
+    "elapsed_ms": 12.9,
+    "error": ""
+  },
+  "0627778.step:igl_arap": {
+    "success": true,
+    "sym_dirichlet": 537565000.0,
+    "flipped_tris": 1414,
+    "angle_mean": 60.7,
+    "area_mean": 1.306,
+    "elapsed_ms": 73.9,
+    "error": ""
+  },
+  "0627778.step:slim": {
+    "success": true,
+    "sym_dirichlet": 187305,
+    "flipped_tris": 0,
+    "angle_mean": 7.45,
+    "area_mean": 1.007,
+    "elapsed_ms": 318.9,
+    "error": ""
+  },
+  "0627778.step:cgal_conformal": {
+    "success": true,
+    "sym_dirichlet": 23001400000000.0,
+    "flipped_tris": 757,
+    "angle_mean": 100.29,
+    "area_mean": 2.34,
+    "elapsed_ms": 5.2,
+    "error": ""
+  },
+  "0627778.step:cgal_arap": {
+    "success": true,
+    "sym_dirichlet": 110637,
+    "flipped_tris": 0,
+    "angle_mean": 34.27,
+    "area_mean": 0.998,
+    "elapsed_ms": 272.2,
+    "error": ""
+  },
+  "0627778.step:cgal_authalic": {
+    "success": true,
+    "sym_dirichlet": 12023800000000.0,
+    "flipped_tris": 1335,
+    "angle_mean": 105.95,
+    "area_mean": 3.15,
+    "elapsed_ms": 5.1,
+    "error": ""
+  },
+  "0627778.step:cm": {
+    "success": true,
+    "sym_dirichlet": 187286,
+    "flipped_tris": 0,
+    "angle_mean": 7.45,
+    "area_mean": 1.007,
+    "elapsed_ms": 366.5,
+    "error": ""
+  },
+  "0696831B.step:heat": {
+    "success": true,
+    "sym_dirichlet": 2953690.0,
+    "flipped_tris": 2015,
+    "angle_mean": 51.29,
+    "area_mean": 1.399,
+    "elapsed_ms": 256.9,
+    "error": ""
+  },
+  "0696831B.step:lscm": {
+    "success": true,
+    "sym_dirichlet": 1e+18,
+    "flipped_tris": 0,
+    "angle_mean": 105.31,
+    "area_mean": 1,
+    "elapsed_ms": 11.5,
+    "error": ""
+  },
+  "0696831B.step:igl_arap": {
+    "success": true,
+    "sym_dirichlet": 879081,
+    "flipped_tris": 909,
+    "angle_mean": 55.92,
+    "area_mean": 1.1,
+    "elapsed_ms": 75.8,
+    "error": ""
+  },
+  "0696831B.step:slim": {
+    "success": true,
+    "sym_dirichlet": 252242,
+    "flipped_tris": 5,
+    "angle_mean": 13.69,
+    "area_mean": 0.915,
+    "elapsed_ms": 496.7,
+    "error": ""
+  },
+  "0696831B.step:cgal_conformal": {
+    "success": true,
+    "sym_dirichlet": 3089280000.0,
+    "flipped_tris": 1148,
+    "angle_mean": 75.09,
+    "area_mean": 1.902,
+    "elapsed_ms": 10.8,
+    "error": ""
+  },
+  "0696831B.step:cgal_arap": {
+    "success": true,
+    "sym_dirichlet": 10189.9,
+    "flipped_tris": 0,
+    "angle_mean": 19.19,
+    "area_mean": 0.985,
+    "elapsed_ms": 162.5,
+    "error": ""
+  },
+  "0696831B.step:cgal_authalic": {
+    "success": true,
+    "sym_dirichlet": 1249390000000.0,
+    "flipped_tris": 1445,
+    "angle_mean": 103.14,
+    "area_mean": 1.068,
+    "elapsed_ms": 10.6,
+    "error": ""
+  },
+  "0696831B.step:cm": {
+    "success": true,
+    "sym_dirichlet": 7222.1,
+    "flipped_tris": 0,
+    "angle_mean": 17.54,
+    "area_mean": 0.896,
+    "elapsed_ms": 482.1,
+    "error": ""
+  },
+  "KleinBottle.STEP:heat": {
+    "success": true,
+    "sym_dirichlet": 403182000000.0,
+    "flipped_tris": 6398,
+    "angle_mean": 86.71,
+    "area_mean": 1.19,
+    "elapsed_ms": 3846.7,
+    "error": ""
+  },
+  "KleinBottle.STEP:lscm": {
+    "success": true,
+    "sym_dirichlet": 1e+18,
+    "flipped_tris": 0,
+    "angle_mean": 117.77,
+    "area_mean": 1,
+    "elapsed_ms": 36.3,
+    "error": ""
+  },
+  "KleinBottle.STEP:igl_arap": {
+    "success": true,
+    "sym_dirichlet": 837547000000.0,
+    "flipped_tris": 5653,
+    "angle_mean": 64.48,
+    "area_mean": 1.228,
+    "elapsed_ms": 349.4,
+    "error": ""
+  },
+  "KleinBottle.STEP:slim": {
+    "success": true,
+    "sym_dirichlet": 1636370000000.0,
+    "flipped_tris": 17,
+    "angle_mean": 5.14,
+    "area_mean": 2.245,
+    "elapsed_ms": 2526.6,
+    "error": ""
+  },
+  "KleinBottle.STEP:cgal_conformal": {
+    "success": true,
+    "sym_dirichlet": 20064000000000.0,
+    "flipped_tris": 7177,
+    "angle_mean": 95.87,
+    "area_mean": 2.154,
+    "elapsed_ms": 48.6,
+    "error": ""
+  },
+  "KleinBottle.STEP:cgal_arap": {
+    "success": false,
+    "sym_dirichlet": -1,
+    "flipped_tris": -1,
+    "angle_mean": -1,
+    "area_mean": -1,
+    "elapsed_ms": -1,
+    "error": "Parameterization failed with error code 6"
+  },
+  "KleinBottle.STEP:cgal_authalic": {
+    "success": true,
+    "sym_dirichlet": 1020100000000.0,
+    "flipped_tris": 6393,
+    "angle_mean": 94.84,
+    "area_mean": 1.393,
+    "elapsed_ms": 47.8,
+    "error": ""
+  },
+  "KleinBottle.STEP:cm": {
+    "success": true,
+    "sym_dirichlet": 9275400.0,
+    "flipped_tris": 1154,
+    "angle_mean": 19.91,
+    "area_mean": 1.215,
+    "elapsed_ms": 1584.5,
+    "error": ""
+  },
+  "teapot.stp:heat": {
+    "success": true,
+    "sym_dirichlet": 5368440000.0,
+    "flipped_tris": 6348,
+    "angle_mean": 79.78,
+    "area_mean": 10211.1,
+    "elapsed_ms": 3902.9,
+    "error": ""
+  },
+  "teapot.stp:lscm": {
+    "success": true,
+    "sym_dirichlet": 1e+18,
+    "flipped_tris": 0,
+    "angle_mean": 109.16,
+    "area_mean": 1,
+    "elapsed_ms": 38.4,
+    "error": ""
+  },
+  "teapot.stp:igl_arap": {
+    "success": false,
+    "sym_dirichlet": -1,
+    "flipped_tris": -1,
+    "angle_mean": -1,
+    "area_mean": -1,
+    "elapsed_ms": -1,
+    "error": "needs boundary (cut failed)"
+  },
+  "teapot.stp:slim": {
+    "success": false,
+    "sym_dirichlet": -1,
+    "flipped_tris": -1,
+    "angle_mean": -1,
+    "area_mean": -1,
+    "elapsed_ms": -1,
+    "error": "SLIM: mesh still closed after cut attempt"
+  },
+  "teapot.stp:cgal_conformal": {
+    "success": false,
+    "sym_dirichlet": -1,
+    "flipped_tris": -1,
+    "angle_mean": -1,
+    "area_mean": -1,
+    "elapsed_ms": -1,
+    "error": "exit 3221225477"
+  },
+  "teapot.stp:cgal_arap": {
+    "success": false,
+    "sym_dirichlet": -1,
+    "flipped_tris": -1,
+    "angle_mean": -1,
+    "area_mean": -1,
+    "elapsed_ms": -1,
+    "error": "Parameterization failed with error code 6"
+  },
+  "teapot.stp:cgal_authalic": {
+    "success": false,
+    "sym_dirichlet": -1,
+    "flipped_tris": -1,
+    "angle_mean": -1,
+    "area_mean": -1,
+    "elapsed_ms": -1,
+    "error": "exit 3221225477"
+  },
+  "teapot.stp:cm": {
+    "success": false,
+    "sym_dirichlet": -1,
+    "flipped_tris": -1,
+    "angle_mean": -1,
+    "area_mean": -1,
+    "elapsed_ms": -1,
+    "error": "CM requires mesh with boundary"
+  },
+  "cgalref_head.glb:heat": {
+    "success": true,
+    "sym_dirichlet": 105069000.0,
+    "flipped_tris": 1490,
+    "angle_mean": 31.48,
+    "area_mean": 0.92,
+    "elapsed_ms": 357.6,
+    "error": ""
+  },
+  "cgalref_head.glb:lscm": {
+    "success": true,
+    "sym_dirichlet": 11331400.0,
+    "flipped_tris": 0,
+    "angle_mean": 4.29,
+    "area_mean": 0.792,
+    "elapsed_ms": 17.8,
+    "error": ""
+  },
+  "cgalref_head.glb:igl_arap": {
+    "success": true,
+    "sym_dirichlet": 1387000000.0,
+    "flipped_tris": 910,
+    "angle_mean": 54.55,
+    "area_mean": 1.178,
+    "elapsed_ms": 76.4,
+    "error": ""
+  },
+  "cgalref_head.glb:slim": {
+    "success": true,
+    "sym_dirichlet": 518327,
+    "flipped_tris": 0,
+    "angle_mean": 22.25,
+    "area_mean": 0.926,
+    "elapsed_ms": 480.4,
+    "error": ""
+  },
+  "cgalref_head.glb:cgal_conformal": {
+    "success": true,
+    "sym_dirichlet": 125549000000.0,
+    "flipped_tris": 1469,
+    "angle_mean": 62.58,
+    "area_mean": 1.157,
+    "elapsed_ms": 7.0,
+    "error": ""
+  },
+  "cgalref_head.glb:cgal_arap": {
+    "success": true,
+    "sym_dirichlet": 86394300000.0,
+    "flipped_tris": 0,
+    "angle_mean": 37.17,
+    "area_mean": 0.943,
+    "elapsed_ms": 424.3,
+    "error": ""
+  },
+  "cgalref_head.glb:cgal_authalic": {
+    "success": true,
+    "sym_dirichlet": 205334000000.0,
+    "flipped_tris": 1425,
+    "angle_mean": 91.75,
+    "area_mean": 1.355,
+    "elapsed_ms": 7.7,
+    "error": ""
+  },
+  "cgalref_head.glb:cm": {
+    "success": true,
+    "sym_dirichlet": 518310,
+    "flipped_tris": 0,
+    "angle_mean": 22.28,
+    "area_mean": 0.926,
+    "elapsed_ms": 511.6,
+    "error": ""
+  },
+  "cgalref_mushroom.glb:heat": {
+    "success": true,
+    "sym_dirichlet": 8423730000.0,
+    "flipped_tris": 1955,
+    "angle_mean": 51.57,
+    "area_mean": 0.879,
+    "elapsed_ms": 724.6,
+    "error": ""
+  },
+  "cgalref_mushroom.glb:lscm": {
+    "success": true,
+    "sym_dirichlet": 1913280.0,
+    "flipped_tris": 0,
+    "angle_mean": 2.42,
+    "area_mean": 1.05,
+    "elapsed_ms": 23.5,
+    "error": ""
+  },
+  "cgalref_mushroom.glb:igl_arap": {
+    "success": true,
+    "sym_dirichlet": 2593290000.0,
+    "flipped_tris": 1725,
+    "angle_mean": 44.52,
+    "area_mean": 1.302,
+    "elapsed_ms": 159.8,
+    "error": ""
+  },
+  "cgalref_mushroom.glb:slim": {
+    "success": true,
+    "sym_dirichlet": 434693,
+    "flipped_tris": 0,
+    "angle_mean": 22.0,
+    "area_mean": 1.079,
+    "elapsed_ms": 963.0,
+    "error": ""
+  },
+  "cgalref_mushroom.glb:cgal_conformal": {
+    "success": true,
+    "sym_dirichlet": 112476000000.0,
+    "flipped_tris": 592,
+    "angle_mean": 52.22,
+    "area_mean": 0.523,
+    "elapsed_ms": 11.8,
+    "error": ""
+  },
+  "cgalref_mushroom.glb:cgal_arap": {
+    "success": true,
+    "sym_dirichlet": 538174,
+    "flipped_tris": 0,
+    "angle_mean": 26.09,
+    "area_mean": 0.973,
+    "elapsed_ms": 242.2,
+    "error": ""
+  },
+  "cgalref_mushroom.glb:cgal_authalic": {
+    "success": true,
+    "sym_dirichlet": 150439000000.0,
+    "flipped_tris": 2401,
+    "angle_mean": 87.16,
+    "area_mean": 0.998,
+    "elapsed_ms": 12.4,
+    "error": ""
+  },
+  "cgalref_mushroom.glb:cm": {
+    "success": true,
+    "sym_dirichlet": 434648,
+    "flipped_tris": 0,
+    "angle_mean": 22.01,
+    "area_mean": 1.079,
+    "elapsed_ms": 299.1,
+    "error": ""
+  },
+  "cgalref_nefertiti.glb:heat": {
+    "success": true,
+    "sym_dirichlet": 573130,
+    "flipped_tris": 0,
+    "angle_mean": 10.88,
+    "area_mean": 1.022,
+    "elapsed_ms": 21.1,
+    "error": ""
+  },
+  "cgalref_nefertiti.glb:lscm": {
+    "success": true,
+    "sym_dirichlet": 609494,
+    "flipped_tris": 0,
+    "angle_mean": 2.37,
+    "area_mean": 0.932,
+    "elapsed_ms": 4.5,
+    "error": ""
+  },
+  "cgalref_nefertiti.glb:igl_arap": {
+    "success": true,
+    "sym_dirichlet": 733584000.0,
+    "flipped_tris": 206,
+    "angle_mean": 58.54,
+    "area_mean": 1.121,
+    "elapsed_ms": 13.7,
+    "error": ""
+  },
+  "cgalref_nefertiti.glb:slim": {
+    "success": true,
+    "sym_dirichlet": 541814,
+    "flipped_tris": 0,
+    "angle_mean": 4.32,
+    "area_mean": 0.976,
+    "elapsed_ms": 78.4,
+    "error": ""
+  },
+  "cgalref_nefertiti.glb:cgal_conformal": {
+    "success": true,
+    "sym_dirichlet": 7477490000.0,
+    "flipped_tris": 286,
+    "angle_mean": 74.75,
+    "area_mean": 0.829,
+    "elapsed_ms": 1.4,
+    "error": ""
+  },
+  "cgalref_nefertiti.glb:cgal_arap": {
+    "success": true,
+    "sym_dirichlet": 510425,
+    "flipped_tris": 0,
+    "angle_mean": 4.4,
+    "area_mean": 0.972,
+    "elapsed_ms": 28.7,
+    "error": ""
+  },
+  "cgalref_nefertiti.glb:cgal_authalic": {
+    "success": true,
+    "sym_dirichlet": 15017800000.0,
+    "flipped_tris": 252,
+    "angle_mean": 86.98,
+    "area_mean": 1.189,
+    "elapsed_ms": 1.4,
+    "error": ""
+  },
+  "cgalref_nefertiti.glb:cm": {
+    "success": true,
+    "sym_dirichlet": 541856,
+    "flipped_tris": 0,
+    "angle_mean": 4.32,
+    "area_mean": 0.976,
+    "elapsed_ms": 164.7,
+    "error": ""
+  },
+  "cgalref_three_peaks.glb:heat": {
+    "success": true,
+    "sym_dirichlet": 99110100.0,
+    "flipped_tris": 1112,
+    "angle_mean": 50.32,
+    "area_mean": 1.073,
+    "elapsed_ms": 460.0,
+    "error": ""
+  },
+  "cgalref_three_peaks.glb:lscm": {
+    "success": true,
+    "sym_dirichlet": 35026700000.0,
+    "flipped_tris": 31,
+    "angle_mean": 5.22,
+    "area_mean": 2.898,
+    "elapsed_ms": 14.3,
+    "error": ""
+  },
+  "cgalref_three_peaks.glb:igl_arap": {
+    "success": true,
+    "sym_dirichlet": 170493000000.0,
+    "flipped_tris": 1717,
+    "angle_mean": 60.25,
+    "area_mean": 1.127,
+    "elapsed_ms": 93.8,
+    "error": ""
+  },
+  "cgalref_three_peaks.glb:slim": {
+    "success": true,
+    "sym_dirichlet": 35026700000.0,
+    "flipped_tris": 31,
+    "angle_mean": 5.22,
+    "area_mean": 2.898,
+    "elapsed_ms": 734.1,
+    "error": ""
+  },
+  "cgalref_three_peaks.glb:cgal_conformal": {
+    "success": true,
+    "sym_dirichlet": 1624520000000.0,
+    "flipped_tris": 2327,
+    "angle_mean": 75.5,
+    "area_mean": 1.979,
+    "elapsed_ms": 9.0,
+    "error": ""
+  },
+  "cgalref_three_peaks.glb:cgal_arap": {
+    "success": true,
+    "sym_dirichlet": 631760,
+    "flipped_tris": 0,
+    "angle_mean": 19.04,
+    "area_mean": 1.208,
+    "elapsed_ms": 376.0,
+    "error": ""
+  },
+  "cgalref_three_peaks.glb:cgal_authalic": {
+    "success": true,
+    "sym_dirichlet": 683347000000.0,
+    "flipped_tris": 1712,
+    "angle_mean": 82.35,
+    "area_mean": 1.416,
+    "elapsed_ms": 9.1,
+    "error": ""
+  },
+  "cgalref_three_peaks.glb:cm": {
+    "success": true,
+    "sym_dirichlet": 475452,
+    "flipped_tris": 0,
+    "angle_mean": 23.46,
+    "area_mean": 1.105,
+    "elapsed_ms": 787.5,
+    "error": ""
+  },
+  "cube_100mm.glb:heat": {
+    "success": true,
+    "sym_dirichlet": 2149090000.0,
+    "flipped_tris": 272,
+    "angle_mean": 40.01,
+    "area_mean": 0.99,
+    "elapsed_ms": 33.7,
+    "error": ""
+  },
+  "cube_100mm.glb:lscm": {
+    "success": true,
+    "sym_dirichlet": 1e+18,
+    "flipped_tris": 0,
+    "angle_mean": 118.66,
+    "area_mean": 1,
+    "elapsed_ms": 5.6,
+    "error": ""
+  },
+  "cube_100mm.glb:igl_arap": {
+    "success": true,
+    "sym_dirichlet": 1596530000.0,
+    "flipped_tris": 204,
+    "angle_mean": 54.7,
+    "area_mean": 1.0,
+    "elapsed_ms": 15.3,
+    "error": ""
+  },
+  "cube_100mm.glb:slim": {
+    "success": true,
+    "sym_dirichlet": 30913600.0,
+    "flipped_tris": 0,
+    "angle_mean": 18.04,
+    "area_mean": 0.998,
+    "elapsed_ms": 151.2,
+    "error": ""
+  },
+  "cube_100mm.glb:cgal_conformal": {
+    "success": true,
+    "sym_dirichlet": 910985000000.0,
+    "flipped_tris": 350,
+    "angle_mean": 68.35,
+    "area_mean": 1.037,
+    "elapsed_ms": 3.0,
+    "error": ""
+  },
+  "cube_100mm.glb:cgal_arap": {
+    "success": true,
+    "sym_dirichlet": 23841600.0,
+    "flipped_tris": 0,
+    "angle_mean": 28.51,
+    "area_mean": 0.997,
+    "elapsed_ms": 21.8,
+    "error": ""
+  },
+  "cube_100mm.glb:cgal_authalic": {
+    "success": true,
+    "sym_dirichlet": 698140000000.0,
+    "flipped_tris": 228,
+    "angle_mean": 102.74,
+    "area_mean": 1.01,
+    "elapsed_ms": 2.8,
+    "error": ""
+  },
+  "cube_100mm.glb:cm": {
+    "success": true,
+    "sym_dirichlet": 30909200.0,
+    "flipped_tris": 0,
+    "angle_mean": 18.04,
+    "area_mean": 0.998,
+    "elapsed_ms": 192.6,
+    "error": ""
+  },
+  "cube_100mm_fillet_25mm.glb:heat": {
+    "success": true,
+    "sym_dirichlet": 871049000.0,
+    "flipped_tris": 2624,
+    "angle_mean": 41.63,
+    "area_mean": 1.004,
+    "elapsed_ms": 948.4,
+    "error": ""
+  },
+  "cube_100mm_fillet_25mm.glb:lscm": {
+    "success": true,
+    "sym_dirichlet": 1e+18,
+    "flipped_tris": 0,
+    "angle_mean": 119.03,
+    "area_mean": 1,
+    "elapsed_ms": 30.2,
+    "error": ""
+  },
+  "cube_100mm_fillet_25mm.glb:igl_arap": {
+    "success": true,
+    "sym_dirichlet": 5383400000.0,
+    "flipped_tris": 1972,
+    "angle_mean": 51.94,
+    "area_mean": 0.999,
+    "elapsed_ms": 192.9,
+    "error": ""
+  },
+  "cube_100mm_fillet_25mm.glb:slim": {
+    "success": true,
+    "sym_dirichlet": 1514680.0,
+    "flipped_tris": 0,
+    "angle_mean": 15.99,
+    "area_mean": 1.006,
+    "elapsed_ms": 1010.8,
+    "error": ""
+  },
+  "cube_100mm_fillet_25mm.glb:cgal_conformal": {
+    "success": true,
+    "sym_dirichlet": 624597000000.0,
+    "flipped_tris": 4183,
+    "angle_mean": 87.15,
+    "area_mean": 1.072,
+    "elapsed_ms": 25.3,
+    "error": ""
+  },
+  "cube_100mm_fillet_25mm.glb:cgal_arap": {
+    "success": true,
+    "sym_dirichlet": 1397840.0,
+    "flipped_tris": 0,
+    "angle_mean": 29.4,
+    "area_mean": 1.005,
+    "elapsed_ms": 276.8,
+    "error": ""
+  },
+  "cube_100mm_fillet_25mm.glb:cgal_authalic": {
+    "success": true,
+    "sym_dirichlet": 2418500000000.0,
+    "flipped_tris": 2496,
+    "angle_mean": 109.49,
+    "area_mean": 1.0,
+    "elapsed_ms": 24.7,
+    "error": ""
+  },
+  "cube_100mm_fillet_25mm.glb:cm": {
+    "success": true,
+    "sym_dirichlet": 1513870.0,
+    "flipped_tris": 0,
+    "angle_mean": 15.99,
+    "area_mean": 1.006,
+    "elapsed_ms": 479.1,
+    "error": ""
+  },
+  "sphere_R100mm.glb:heat": {
+    "success": true,
+    "sym_dirichlet": 98927400000.0,
+    "flipped_tris": 417,
+    "angle_mean": 37.79,
+    "area_mean": 0.986,
+    "elapsed_ms": 62.1,
+    "error": ""
+  },
+  "sphere_R100mm.glb:lscm": {
+    "success": true,
+    "sym_dirichlet": 1e+18,
+    "flipped_tris": 0,
+    "angle_mean": 119.17,
+    "area_mean": 1,
+    "elapsed_ms": 5.1,
+    "error": ""
+  },
+  "sphere_R100mm.glb:igl_arap": {
+    "success": true,
+    "sym_dirichlet": 11454600000.0,
+    "flipped_tris": 315,
+    "angle_mean": 47.54,
+    "area_mean": 0.99,
+    "elapsed_ms": 23.0,
+    "error": ""
+  },
+  "sphere_R100mm.glb:slim": {
+    "success": true,
+    "sym_dirichlet": 84634200.0,
+    "flipped_tris": 0,
+    "angle_mean": 16.97,
+    "area_mean": 1.009,
+    "elapsed_ms": 127.7,
+    "error": ""
+  },
+  "sphere_R100mm.glb:cgal_conformal": {
+    "success": true,
+    "sym_dirichlet": 172332000000.0,
+    "flipped_tris": 47,
+    "angle_mean": 79.83,
+    "area_mean": 1.054,
+    "elapsed_ms": 3.3,
+    "error": ""
+  },
+  "sphere_R100mm.glb:cgal_arap": {
+    "success": true,
+    "sym_dirichlet": 68527200.0,
+    "flipped_tris": 0,
+    "angle_mean": 20.52,
+    "area_mean": 1.005,
+    "elapsed_ms": 26.0,
+    "error": ""
+  },
+  "sphere_R100mm.glb:cgal_authalic": {
+    "success": true,
+    "sym_dirichlet": 791743000000.0,
+    "flipped_tris": 443,
+    "angle_mean": 89.89,
+    "area_mean": 1.064,
+    "elapsed_ms": 3.5,
+    "error": ""
+  },
+  "sphere_R100mm.glb:cm": {
+    "success": true,
+    "sym_dirichlet": 84519800.0,
+    "flipped_tris": 0,
+    "angle_mean": 16.97,
+    "area_mean": 1.009,
+    "elapsed_ms": 188.9,
+    "error": ""
+  },
+  "torus_R200mm_r40mm.glb:heat": {
+    "success": true,
+    "sym_dirichlet": 780221000000.0,
+    "flipped_tris": 390,
+    "angle_mean": 63.78,
+    "area_mean": 1.016,
+    "elapsed_ms": 46.6,
+    "error": ""
+  },
+  "torus_R200mm_r40mm.glb:lscm": {
+    "success": true,
+    "sym_dirichlet": 1e+18,
+    "flipped_tris": 0,
+    "angle_mean": 117.91,
+    "area_mean": 1,
+    "elapsed_ms": 5.0,
+    "error": ""
+  },
+  "torus_R200mm_r40mm.glb:igl_arap": {
+    "success": true,
+    "sym_dirichlet": 9458570000000.0,
+    "flipped_tris": 301,
+    "angle_mean": 68.18,
+    "area_mean": 1.019,
+    "elapsed_ms": 21.2,
+    "error": ""
+  },
+  "torus_R200mm_r40mm.glb:slim": {
+    "success": true,
+    "sym_dirichlet": 994924000000000.0,
+    "flipped_tris": 120,
+    "angle_mean": 55.7,
+    "area_mean": 1.041,
+    "elapsed_ms": 155.9,
+    "error": ""
+  },
+  "torus_R200mm_r40mm.glb:cgal_conformal": {
+    "success": true,
+    "sym_dirichlet": 617627000000000.0,
+    "flipped_tris": 311,
+    "angle_mean": 99.51,
+    "area_mean": 1.086,
+    "elapsed_ms": 3.2,
+    "error": ""
+  },
+  "torus_R200mm_r40mm.glb:cgal_arap": {
+    "success": true,
+    "sym_dirichlet": 3395700000000000.0,
+    "flipped_tris": 118,
+    "angle_mean": 58.69,
+    "area_mean": 0.995,
+    "elapsed_ms": 92.5,
+    "error": ""
+  },
+  "torus_R200mm_r40mm.glb:cgal_authalic": {
+    "success": true,
+    "sym_dirichlet": 15483400000000.0,
+    "flipped_tris": 399,
+    "angle_mean": 80.04,
+    "area_mean": 1.016,
+    "elapsed_ms": 3.1,
+    "error": ""
+  },
+  "torus_R200mm_r40mm.glb:cm": {
+    "success": false,
+    "sym_dirichlet": -1,
+    "flipped_tris": -1,
+    "angle_mean": -1,
+    "area_mean": -1,
+    "elapsed_ms": -1,
+    "error": "CM: Newton step failed at iteration 0"
+  },
+  "torus_R50mm_r15mm.glb:heat": {
+    "success": true,
+    "sym_dirichlet": 60916000.0,
+    "flipped_tris": 411,
+    "angle_mean": 41.7,
+    "area_mean": 1.012,
+    "elapsed_ms": 68.5,
+    "error": ""
+  },
+  "torus_R50mm_r15mm.glb:lscm": {
+    "success": true,
+    "sym_dirichlet": 1e+18,
+    "flipped_tris": 0,
+    "angle_mean": 118.93,
+    "area_mean": 1,
+    "elapsed_ms": 5.2,
+    "error": ""
+  },
+  "torus_R50mm_r15mm.glb:igl_arap": {
+    "success": true,
+    "sym_dirichlet": 6501960000.0,
+    "flipped_tris": 310,
+    "angle_mean": 64.95,
+    "area_mean": 1.006,
+    "elapsed_ms": 26.3,
+    "error": ""
+  },
+  "torus_R50mm_r15mm.glb:slim": {
+    "success": true,
+    "sym_dirichlet": 21841200000.0,
+    "flipped_tris": 82,
+    "angle_mean": 43.6,
+    "area_mean": 1.008,
+    "elapsed_ms": 188.5,
+    "error": ""
+  },
+  "torus_R50mm_r15mm.glb:cgal_conformal": {
+    "success": true,
+    "sym_dirichlet": 1778280000000.0,
+    "flipped_tris": 306,
+    "angle_mean": 89.83,
+    "area_mean": 0.971,
+    "elapsed_ms": 3.6,
+    "error": ""
+  },
+  "torus_R50mm_r15mm.glb:cgal_arap": {
+    "success": true,
+    "sym_dirichlet": 15821900000000.0,
+    "flipped_tris": 91,
+    "angle_mean": 47.91,
+    "area_mean": 1.001,
+    "elapsed_ms": 129.0,
+    "error": ""
+  },
+  "torus_R50mm_r15mm.glb:cgal_authalic": {
+    "success": true,
+    "sym_dirichlet": 37701500000000.0,
+    "flipped_tris": 421,
+    "angle_mean": 94.51,
+    "area_mean": 0.994,
+    "elapsed_ms": 3.5,
+    "error": ""
+  },
+  "torus_R50mm_r15mm.glb:cm": {
+    "success": true,
+    "sym_dirichlet": 2887280.0,
+    "flipped_tris": 156,
+    "angle_mean": 16.22,
+    "area_mean": 0.997,
+    "elapsed_ms": 246.4,
+    "error": ""
+  }
+}

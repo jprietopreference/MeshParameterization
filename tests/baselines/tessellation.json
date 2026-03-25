@@ -1,0 +1,164 @@
+{
+  "0617023B.step": {
+    "vertices": 4459,
+    "faces": 5148,
+    "volume_mm3": 20527.619140625,
+    "bb_min": [
+      -22.25,
+      -8.75,
+      -27.0
+    ],
+    "bb_max": [
+      24.25,
+      8.75,
+      27.0
+    ],
+    "extent": [
+      46.5,
+      17.5,
+      54.0
+    ],
+    "step_unit": "mm",
+    "scale_factor": 1.0,
+    "n_primitives": 1,
+    "has_seam": false,
+    "seam_segments": 0,
+    "aspect_mean": 44.246,
+    "aspect_max": 30515.0
+  },
+  "0618969.step": {
+    "vertices": 26762,
+    "faces": 18364,
+    "volume_mm3": 89516.3828125,
+    "bb_min": [
+      -23.0,
+      -103.0,
+      -6.25
+    ],
+    "bb_max": [
+      11.0,
+      271.0,
+      76.35
+    ],
+    "extent": [
+      34.0,
+      374.0,
+      82.6
+    ],
+    "step_unit": "mm",
+    "scale_factor": 1.0,
+    "n_primitives": 2,
+    "has_seam": true,
+    "seam_segments": 16,
+    "aspect_mean": 8.799,
+    "aspect_max": 750.1
+  },
+  "0627778.step": {
+    "vertices": 5506,
+    "faces": 3410,
+    "volume_mm3": 31716.509765625,
+    "bb_min": [
+      -17.0,
+      -57.5,
+      -12.5
+    ],
+    "bb_max": [
+      17.0,
+      102.5,
+      2.5
+    ],
+    "extent": [
+      34.0,
+      160.0,
+      15.0
+    ],
+    "step_unit": "mm",
+    "scale_factor": 1.0,
+    "n_primitives": 2,
+    "has_seam": true,
+    "seam_segments": 28,
+    "aspect_mean": 1.834,
+    "aspect_max": 11.5
+  },
+  "0696831B.step": {
+    "vertices": 2929,
+    "faces": 2888,
+    "volume_mm3": 1326.2099609375,
+    "bb_min": [
+      -6.5,
+      -13.0,
+      -23.0
+    ],
+    "bb_max": [
+      4.8,
+      0.0,
+      23.0
+    ],
+    "extent": [
+      11.3,
+      13.0,
+      46.0
+    ],
+    "step_unit": "mm",
+    "scale_factor": 1.0,
+    "n_primitives": 1,
+    "has_seam": false,
+    "seam_segments": 0,
+    "aspect_mean": 2.344,
+    "aspect_max": 24.6
+  },
+  "KleinBottle.STEP": {
+    "vertices": 7540,
+    "faces": 12660,
+    "volume_mm3": 53989.3984375,
+    "bb_min": [
+      -88.29,
+      -0.0,
+      -50.24
+    ],
+    "bb_max": [
+      50.24,
+      164.12,
+      50.24
+    ],
+    "extent": [
+      138.5,
+      164.1,
+      100.5
+    ],
+    "step_unit": "mm",
+    "scale_factor": 1.0,
+    "n_primitives": 1,
+    "has_seam": false,
+    "seam_segments": 0,
+    "aspect_mean": 1.194,
+    "aspect_max": 9.8
+  },
+  "teapot.stp": {
+    "vertices": 8326,
+    "faces": 12196,
+    "volume_mm3": 42456.37890625,
+    "bb_min": [
+      -68.58,
+      0.0,
+      -49.3
+    ],
+    "bb_max": [
+      84.88,
+      80.01,
+      44.29
+    ],
+    "extent": [
+      153.5,
+      80.0,
+      93.6
+    ],
+    "step_unit": "unknown",
+    "scale_factor": 25.4,
+    "n_primitives": 1,
+    "has_seam": false,
+    "seam_segments": 0,
+    "aspect_mean": 21.021,
+    "aspect_max": 148565.0
+  }
+}

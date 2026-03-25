@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Refined STEP → GLB pipeline using OCCT + Gmsh.
+"""Refined STEP -> GLB pipeline using OCCT + Gmsh.
 
-Pipeline: STEP → OCC import → heal → Gmsh isotropic mesh → OCC normals → GLB
+Pipeline: STEP -> OCC import -> heal -> Gmsh isotropic mesh -> OCC normals -> GLB
 
 Usage: python occ_gmsh_pipeline.py input.step output.glb [options]
 """
@@ -34,8 +34,6 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
 
     gmsh.model.occ.synchronize()
 
-    # Check units — detect if STEP is in inches
-    # (Gmsh/OCC reads STEP in its native units)
     entities_3d = gmsh.model.occ.getEntities(dim=3)
     entities_2d = gmsh.model.occ.getEntities(dim=2)
     print(f"[pipeline] Entities: {len(entities_3d)} volumes, {len(entities_2d)} surfaces")
@@ -50,28 +48,60 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
         except Exception as e:
             print(f"[pipeline] Healing failed (continuing): {e}")
 
-    # Increase geometry tolerance for problematic models
     gmsh.option.setNumber("Geometry.Tolerance", 1e-4)
     gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-4)
 
-    # 3. Compute bounding box for auto-sizing
+    # 3. Detect units from STEP file and compute scale to mm
     bb = gmsh.model.getBoundingBox(-1, -1)
     extent = [bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2]]
     max_extent = max(extent)
     print(f"[pipeline] Bounding box: {extent[0]:.2f} x {extent[1]:.2f} x {extent[2]:.2f}")
 
-    # Auto scale to mm if needed
     if scale is None:
-        # Heuristic: if max extent < 1, likely meters → scale to mm
-        if max_extent < 0.5:
-            scale = 1000.0
-            print(f"[pipeline] Auto-scaling to mm (x{scale})")
-        elif max_extent < 50:
-            # Could be inches
-            scale = 25.4
-            print(f"[pipeline] Auto-scaling inches->mm (x{scale})")
+        # Parse STEP file for unit declarations
+        step_unit = None
+        try:
+            with open(input_path, 'r', errors='ignore') as fh:
+                header = fh.read(50000)
+            import re
+            header_upper = header.upper()
+            if "CONVERSION_BASED_UNIT" in header_upper:
+                if re.search(r"CONVERSION_BASED_UNIT\s*\(\s*'MILLIMETRE'", header, re.IGNORECASE):
+                    step_unit = "mm"
+                elif re.search(r"CONVERSION_BASED_UNIT\s*\(\s*'INCH'", header, re.IGNORECASE):
+                    step_unit = "inch"
+                elif re.search(r"CONVERSION_BASED_UNIT\s*\(\s*'METRE'", header, re.IGNORECASE):
+                    step_unit = "m"
+                elif re.search(r"CONVERSION_BASED_UNIT\s*\(\s*'CENTIMETRE'", header, re.IGNORECASE):
+                    step_unit = "cm"
+            if step_unit is None and "SI_UNIT" in header_upper:
+                if re.search(r"SI_UNIT\s*\(\s*\.MILLI\.\s*,\s*\.METRE\.\s*\)", header):
+                    step_unit = "mm"
+                elif re.search(r"SI_UNIT\s*\(\s*\$\s*,\s*\.METRE\.\s*\)", header):
+                    step_unit = "m"
+                elif re.search(r"SI_UNIT\s*\(\s*\.CENTI\.\s*,\s*\.METRE\.\s*\)", header):
+                    step_unit = "cm"
+        except:
+            pass
+
+        unit_scales = {"mm": 1.0, "m": 1000.0, "cm": 10.0, "inch": 25.4}
+        if step_unit and step_unit in unit_scales:
+            scale = unit_scales[step_unit]
+            if scale != 1.0:
+                print(f"[pipeline] STEP unit: {step_unit} -> scale x{scale} to mm")
+            else:
+                print(f"[pipeline] STEP unit: {step_unit} (no scaling needed)")
         else:
-            scale = 1.0
+            # Fallback: heuristic from bounding box
+            if max_extent < 0.5:
+                scale = 1000.0
+                print(f"[pipeline] No unit found, auto-scaling to mm (x{scale}, extent={max_extent:.4f})")
+            elif max_extent < 25:
+                scale = 25.4
+                print(f"[pipeline] No unit found, assuming inches->mm (x{scale}, extent={max_extent:.2f})")
+            else:
+                scale = 1.0
+                print(f"[pipeline] No unit found, assuming mm (extent={max_extent:.1f})")
 
     # 4. Configure Gmsh meshing from chord deviation target
     #
@@ -604,10 +634,15 @@ def step_to_glb(input_path, output_path, chord_deviation=1.0, min_edge=None, max
         print(f"[pipeline] Mesh: {total_nv} vertices, {total_nf} triangles, "
               f"{len(primitives)} primitive(s), {n_edge_segs} edge segments, {len(surfaces)} OCC faces")
 
-        # Store B-Rep edge lines as extras on the node
+        # Store B-Rep edge lines + metadata as extras on the node
         node = {"mesh": 0}
+        extras = {}
         if edge_lines:
-            node["extras"] = {"edgeLines": edge_lines}
+            extras["edgeLines"] = edge_lines
+        extras["stepUnit"] = step_unit if step_unit else "unknown"
+        extras["scaleFactor"] = scale
+        extras["outputUnit"] = "mm"
+        node["extras"] = extras
 
         gltf = json.dumps({
             "asset": {"version": "2.0", "generator": "occ_gmsh_pipeline"},
