@@ -50,7 +50,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Runtime dependencies: Python, Gmsh, Node.js (for Vite dev server)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv \
-    libgomp1 \
+    libgomp1 libglu1-mesa libegl1 libgl1 libxrender1 libxcursor1 libxft2 libxinerama1 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
