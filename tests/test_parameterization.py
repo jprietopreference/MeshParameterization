@@ -148,8 +148,10 @@ def test_parameterization(model_name, source, method, baseline, results, glb_cac
                        f"(error: {actual.get('error', '')})"
 
     if actual['success'] and expected.get('success'):
+        # Flipped tris: exact match for GLB files, 10% tolerance for STEP (cross-platform tessellation diff)
+        flip_tol = 0.1 if source == 'step' else TOL_FLIPS
         checks.append(check_regression(
-            actual['flipped_tris'], expected.get('flipped_tris'), 'flipped_tris', TOL_FLIPS))
+            actual['flipped_tris'], expected.get('flipped_tris'), 'flipped_tris', flip_tol))
 
         # SD: only check if both are reasonable (not huge)
         if actual['sym_dirichlet'] < 1e12 and expected.get('sym_dirichlet', 1e12) < 1e12:
