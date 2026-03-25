@@ -156,6 +156,9 @@ target_include_directories(meshparam_server PRIVATE
 )
 
 target_link_libraries(meshparam_server PRIVATE meshparam_lib cgalparam_lib)
+if(WIN32)
+    target_link_libraries(meshparam_server PRIVATE ws2_32)  # httplib needs Winsock on MinGW
+endif()
 
 # Draco disabled — BabylonJS doesn't expose custom GENERIC attributes from Draco
 # if(draco_FOUND)
