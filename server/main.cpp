@@ -1145,6 +1145,18 @@ int main(int argc, char* argv[]) {
 
     // --- Broker: run all methods via subprocesses, pick best ---
     svr.Post("/api/parameterize", [&](const httplib::Request& req, httplib::Response& res) {
+        // Validate input
+        if (req.body.empty()) {
+            res.status = 400; res.set_content("{\"error\":\"Empty request body\"}", "application/json"); return;
+        }
+        if (req.body.size() > 100 * 1024 * 1024) {
+            res.status = 400; res.set_content("{\"error\":\"File too large (max 100MB)\"}", "application/json"); return;
+        }
+        // Check GLB magic bytes
+        if (req.body.size() < 12 || req.body.substr(0, 4) != "glTF") {
+            res.status = 400; res.set_content("{\"error\":\"Invalid GLB file (bad magic bytes)\"}", "application/json"); return;
+        }
+
         std::string forced_method = req.has_param("method") ? req.get_param_value("method") : "auto";
         int timeout_sec = req.has_param("timeout") ? std::stoi(req.get_param_value("timeout")) : 60;
 
@@ -1564,6 +1576,19 @@ int main(int argc, char* argv[]) {
 
     // --- STEP tessellation (Gmsh default, OCC fallback) ---
     svr.Post("/api/tessellate/step", [&occ_cli, &gmsh_cli](const httplib::Request& req, httplib::Response& res) {
+        // Validate STEP input
+        if (req.body.empty()) {
+            res.status = 400; res.set_content("{\"error\":\"Empty request body\"}", "application/json"); return;
+        }
+        if (req.body.size() > 100 * 1024 * 1024) {
+            res.status = 400; res.set_content("{\"error\":\"File too large (max 100MB)\"}", "application/json"); return;
+        }
+        // STEP files start with "ISO-10303-21" in the header
+        if (req.body.size() > 20 && req.body.find("ISO-10303") == std::string::npos
+            && req.body.find("STEP") == std::string::npos) {
+            res.status = 400; res.set_content("{\"error\":\"Invalid STEP file (no ISO-10303 header)\"}", "application/json"); return;
+        }
+
         std::string tess = req.has_param("tessellator") ? req.get_param_value("tessellator") : "gmsh";
         double defl = req.has_param("deflection") ? std::stod(req.get_param_value("deflection")) : 1.0;
         try {

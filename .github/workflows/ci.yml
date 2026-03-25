@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install Python dependencies
+      run: pip install -r requirements.txt
+
+    - name: Setup vcpkg
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgGitCommitId: '2024.09.30'
+
+    - name: Install vcpkg packages
+      run: vcpkg install intel-mkl:x64-windows
+
+    - name: Setup Ninja
+      uses: seanmiddleditch/gha-setup-ninja@master
+
+    - name: Configure server (CMake)
+      run: |
+        cd server
+        cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release `
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+    - name: Build server
+      run: cmake --build server/build
+
+    - name: Copy MKL DLLs
+      run: |
+        Copy-Item "$env:VCPKG_ROOT/installed/x64-windows/bin/mkl_*.dll" server/build/ -ErrorAction SilentlyContinue
+        Copy-Item "$env:VCPKG_ROOT/installed/x64-windows/bin/libiomp5md.dll" server/build/ -ErrorAction SilentlyContinue
+
+    - name: Run tessellation tests
+      run: python -m pytest tests/test_tessellation.py -v --tb=short --timeout=120
+
+    - name: Run parameterization tests
+      run: python -m pytest tests/test_parameterization.py -v --tb=short --timeout=300
+
+    - name: Upload test report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results
+        path: tests/regression_report.html
+        retention-days: 30

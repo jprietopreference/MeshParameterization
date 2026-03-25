@@ -1,0 +1,4 @@
+gmsh>=4.12
+numpy>=1.24
+pytest>=8.0
+pytest-html>=4.0
