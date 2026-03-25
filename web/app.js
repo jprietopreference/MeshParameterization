@@ -134,6 +134,29 @@ async function loadGlb(glbBuffer, applyChecker = false) {
             }
 
             if (currentMesh) showMeshQuality(currentMesh);
+
+            // Display STEP unit info from GLB extras
+            if (!applyChecker) {
+                let stepUnit = null;
+                // Check transformNodes and meshes for extras
+                for (const tn of (container.transformNodes || [])) {
+                    stepUnit = tn.metadata?.gltf?.extras?.stepUnit;
+                    if (stepUnit) break;
+                }
+                if (!stepUnit && lastGlbBuffer) {
+                    try {
+                        const dv = new DataView(lastGlbBuffer.buffer || lastGlbBuffer);
+                        const jsonLen = dv.getUint32(12, true);
+                        const jsonStr = new TextDecoder().decode(new Uint8Array(lastGlbBuffer.buffer || lastGlbBuffer, 20, jsonLen));
+                        const gltf = JSON.parse(jsonStr);
+                        stepUnit = gltf.nodes?.[0]?.extras?.stepUnit;
+                    } catch(e) {}
+                }
+                if (stepUnit) {
+                    const info = $('fileInfo');
+                    if (info) info.textContent += ` [STEP unit: ${stepUnit}]`;
+                }
+            }
         }
     } finally { URL.revokeObjectURL(url); }
 }

@@ -20,6 +20,9 @@ web/node_modules/
 # Test artifacts
 web/tests/
 web/test-results/
+tests/regression_report.html
+tests/.pytest_cache/
+.pytest_cache/
 
 # Benchmark data and results (too large for git, see CLAUDE.md for recovery)
 benchmark/
