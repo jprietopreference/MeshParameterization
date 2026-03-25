@@ -3,6 +3,7 @@
 
 #include "httplib.h"
 #include "logger.h"
+#include "platform.h"
 
 #include "meshparam/gltf_io.h"
 #include "meshparam/parameterizer.h"
@@ -1208,14 +1209,7 @@ int main(int argc, char* argv[]) {
         // Check bench CLI
         bool bench_ok = false;
         {
-            char self_path[4096] = {};
-#ifdef _WIN32
-            GetModuleFileNameA(nullptr, self_path, sizeof(self_path));
-#endif
-            std::string self_dir(self_path);
-            auto pos = self_dir.find_last_of("\\/");
-            if (pos != std::string::npos) self_dir = self_dir.substr(0, pos + 1);
-            std::string bench = self_dir + "meshparam_bench.exe";
+            std::string bench = find_bench_exe();
             std::ifstream f(bench);
             bench_ok = f.good();
             json << ",\"bench_cli\":" << (bench_ok ? "true" : "false");
@@ -1225,7 +1219,11 @@ int main(int argc, char* argv[]) {
         bool gmsh_ok = !gmsh_cli.empty();
         if (gmsh_ok) {
             // Try running 'python -c "import gmsh"' to verify
+            #ifdef _WIN32
             int rc = std::system("python -c \"import gmsh\" > nul 2>&1");
+            #else
+            int rc = std::system("python3 -c \"import gmsh\" > /dev/null 2>&1");
+            #endif
             gmsh_ok = (rc == 0);
         }
         json << ",\"gmsh\":" << (gmsh_ok ? "true" : "false");
@@ -1267,19 +1265,7 @@ int main(int argc, char* argv[]) {
             if (!tmp_dir) tmp_dir = std::getenv("TMP");
             if (!tmp_dir) tmp_dir = ".";
 
-            // Look for meshparam_bench in same directory as server
-            char self_path[4096] = {};
-#ifdef _WIN32
-            GetModuleFileNameA(nullptr, self_path, sizeof(self_path));
-#endif
-            std::string self_dir = std::string(self_path);
-            auto pos = self_dir.find_last_of("\\/");
-            if (pos != std::string::npos) self_dir = self_dir.substr(0, pos + 1);
-            else self_dir = "";
-            bench_exe = self_dir + "meshparam_bench.exe";
-            if (!std::ifstream(bench_exe).good()) {
-                bench_exe = "meshparam_bench.exe"; // fallback to PATH
-            }
+            bench_exe = find_bench_exe();
         }
 
         // Write input GLB to temp file
@@ -1307,17 +1293,12 @@ int main(int argc, char* argv[]) {
             methods = {forced_method};
         }
 
-        // Launch all methods as subprocesses in parallel
+        // Launch all methods as subprocesses in parallel (cross-platform via platform.h)
         struct SubProc {
             std::string method;
             std::string json_path;
             std::string glb_path;
-#ifdef _WIN32
-            HANDLE hProcess = nullptr;
-            HANDLE hThread = nullptr;
-#else
-            pid_t pid = 0;
-#endif
+            SubprocessHandle handle;
         };
 
         std::vector<SubProc> procs(methods.size());
@@ -1329,57 +1310,30 @@ int main(int argc, char* argv[]) {
             std::string cmd = "\"" + bench_exe + "\" " + methods[i]
                 + " \"" + tmp_input + "\""
                 + " --json \"" + procs[i].json_path + "\""
-                + " --output-glb \"" + procs[i].glb_path + "\""
-;
+                + " --output-glb \"" + procs[i].glb_path + "\"";
 
-#ifdef _WIN32
-            STARTUPINFOA si = {}; si.cb = sizeof(si);
-            PROCESS_INFORMATION pi = {};
-            si.dwFlags = STARTF_USESHOWWINDOW;
-            si.wShowWindow = SW_HIDE;
-            if (CreateProcessA(nullptr, const_cast<char*>(cmd.c_str()), nullptr, nullptr, FALSE,
-                              CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-                procs[i].hProcess = pi.hProcess;
-                procs[i].hThread = pi.hThread;
-            } else {
+            procs[i].handle = spawn_subprocess(cmd);
+            procs[i].handle.method = methods[i];
+            if (!procs[i].handle.valid) {
                 std::cerr << "[broker] Failed to spawn " << methods[i] << std::endl;
             }
-#else
-            // POSIX: fork+exec (simplified)
-            std::string full_cmd = cmd + " &";
-            std::system(full_cmd.c_str());
-#endif
         }
 
-        // Wait for all with timeout
+        // Wait for all with timeout, kill stragglers
         auto broker_start = std::chrono::steady_clock::now();
-#ifdef _WIN32
-        std::vector<HANDLE> handles;
         for (auto& p : procs) {
-            if (p.hProcess) handles.push_back(p.hProcess);
-        }
-        if (!handles.empty()) {
-            DWORD wait_ms = static_cast<DWORD>(timeout_sec * 1000);
-            WaitForMultipleObjects(static_cast<DWORD>(handles.size()), handles.data(), TRUE, wait_ms);
-        }
-        // Kill any still running
-        for (auto& p : procs) {
-            if (p.hProcess) {
-                DWORD exit_code = 0;
-                GetExitCodeProcess(p.hProcess, &exit_code);
-                if (exit_code == STILL_ACTIVE) {
-                    std::cerr << "[broker] Killing timed-out process: " << p.method << std::endl;
-                    TerminateProcess(p.hProcess, 1);
-                    WaitForSingleObject(p.hProcess, 5000);
-                }
-                CloseHandle(p.hProcess);
-                CloseHandle(p.hThread);
+            if (!p.handle.valid) continue;
+            int remaining_ms = timeout_sec * 1000 -
+                (int)std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - broker_start).count();
+            if (remaining_ms < 100) remaining_ms = 100;
+            int rc = wait_subprocess(p.handle, remaining_ms);
+            if (rc == -1) {
+                std::cerr << "[broker] Killing timed-out process: " << p.method << std::endl;
+                kill_subprocess(p.handle);
             }
+            close_subprocess(p.handle);
         }
-#else
-        // POSIX: wait with timeout (simplified — use alarm/signal)
-        sleep(timeout_sec);
-#endif
 
         // Collect results
         std::vector<MethodResult> results;
@@ -1619,36 +1573,10 @@ int main(int argc, char* argv[]) {
 
             { std::ofstream f(tmp_obj, std::ios::binary); f.write(req.body.data(), req.body.size()); }
 
-            // Use bench CLI in "convert" mode
-            char self_path[4096] = {};
-#ifdef _WIN32
-            GetModuleFileNameA(nullptr, self_path, sizeof(self_path));
-#endif
-            std::string self_dir = std::string(self_path);
-            auto pos = self_dir.find_last_of("\\/");
-            if (pos != std::string::npos) self_dir = self_dir.substr(0, pos + 1);
-            std::string bench_exe = self_dir + "meshparam_bench.exe";
-
-            // Use CreateProcess instead of system() to avoid quote issues on Windows
-#ifdef _WIN32
+            // Use bench CLI in "convert" mode (cross-platform)
+            std::string bench_exe = find_bench_exe();
             std::string cmd = "\"" + bench_exe + "\" convert \"" + tmp_obj + "\" --output-glb \"" + tmp_glb + "\"";
-            STARTUPINFOA si = {}; si.cb = sizeof(si);
-            si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
-            PROCESS_INFORMATION pi = {};
-            int ret = -1;
-            if (CreateProcessA(bench_exe.c_str(), const_cast<char*>(cmd.c_str()),
-                              nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-                WaitForSingleObject(pi.hProcess, 30000);
-                DWORD exit_code = 1;
-                GetExitCodeProcess(pi.hProcess, &exit_code);
-                ret = (exit_code == 0) ? 0 : 1;
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
-            }
-#else
-            std::string cmd = bench_exe + " convert " + tmp_obj + " --output-glb " + tmp_glb;
-            int ret = std::system(cmd.c_str());
-#endif
+            int ret = run_subprocess(cmd, 30000);
             std::remove(tmp_obj.c_str());
 
             if (ret != 0) {
@@ -1738,18 +1666,11 @@ int main(int argc, char* argv[]) {
     std::cout << "\nListening on http://localhost:" << port << std::endl;
     LOG_INFO("Server listening on http://0.0.0.0:" + std::to_string(port));
 
-    // Graceful shutdown on Ctrl+C
-    static httplib::Server* g_svr = &svr;
-#ifdef _WIN32
-    SetConsoleCtrlHandler([](DWORD type) -> BOOL {
-        if (type == CTRL_C_EVENT || type == CTRL_CLOSE_EVENT || type == CTRL_SHUTDOWN_EVENT) {
-            LOG_INFO("Shutdown signal received");
-            if (g_svr) g_svr->stop();
-            return TRUE;
-        }
-        return FALSE;
-    }, TRUE);
-#endif
+    // Graceful shutdown on Ctrl+C / SIGTERM (cross-platform)
+    install_shutdown_handler([&svr]() {
+        LOG_INFO("Shutdown signal received");
+        svr.stop();
+    });
 
     svr.listen("0.0.0.0", port);
     LOG_INFO("Server stopped");

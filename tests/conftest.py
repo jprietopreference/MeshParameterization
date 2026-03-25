@@ -10,7 +10,8 @@ MODELS_DIR = os.path.join(ROOT, "models")
 STEP_DIR = os.path.join(MODELS_DIR, "step")
 GLTF_DIR = os.path.join(MODELS_DIR, "glTF")
 PIPELINE = os.path.join(ROOT, "scripts", "occ_gmsh_pipeline.py")
-BENCH_CLI = os.path.join(ROOT, "server", "build", "meshparam_bench.exe")
+_exe = ".exe" if os.name == "nt" else ""
+BENCH_CLI = os.path.join(ROOT, "server", "build", f"meshparam_bench{_exe}")
 BASELINES_DIR = os.path.join(os.path.dirname(__file__), "baselines")
 
 # Tolerances for regression checks

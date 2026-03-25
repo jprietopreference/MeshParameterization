@@ -157,7 +157,8 @@ def compute_sym_dirichlet(V, F, UV):
     return mean_sd, flipped, energies
 
 
-BENCH_CLI = os.path.join(ROOT, "server", "build", "meshparam_bench.exe")
+_exe = ".exe" if os.name == "nt" else ""
+BENCH_CLI = os.path.join(ROOT, "server", "build", f"meshparam_bench{_exe}")
 METHODS = ["heat", "lscm", "igl_arap", "slim", "cgal_conformal", "cgal_arap", "cgal_authalic", "cm"]
 
 
@@ -318,7 +319,7 @@ def is_server_alive(server_url):
 
 def start_server():
     """Start the parameterization server as a subprocess."""
-    server_exe = os.path.join(ROOT, "server", "build", "meshparam_server.exe")
+    server_exe = os.path.join(ROOT, "server", "build", f"meshparam_server{_exe}")
     if not os.path.exists(server_exe):
         return None
     proc = subprocess.Popen(
@@ -350,6 +351,8 @@ def ensure_server(server_url, server_proc=None):
     # Also kill any stale server
     if sys.platform == 'win32':
         os.system('taskkill /IM meshparam_server.exe /F >nul 2>&1')
+    else:
+        os.system('pkill -f meshparam_server 2>/dev/null')
     time.sleep(1)
     proc = start_server()
     if proc and is_server_alive(server_url):
