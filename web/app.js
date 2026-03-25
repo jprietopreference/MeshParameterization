@@ -20,7 +20,7 @@ if (BABYLON.DracoCompression) {
 const API = 'http://localhost:8080';
 
 // --- State ---
-const state = { inputGlb: null, resultGlb: null, fileName: '', artistGlb: null };
+const state = { inputGlb: null, resultGlb: null, fileName: '' };
 
 // --- DOM ---
 const $ = id => document.getElementById(id);
@@ -302,18 +302,6 @@ $('fileInput').addEventListener('change', async (e) => {
         if ($('showFaceEdges')) {
             $('showFaceEdges').checked = currentMesh?.getVerticesData('_FACE_ID') != null;
         }
-        // Auto-detect artist UVs for OBJ files
-        state.artistGlb = null;
-        if (ext === 'obj') {
-            try {
-                const r = await fetch(`${API}/api/artist-uvs/${encodeURIComponent(file.name)}`);
-                if (r.ok) {
-                    state.artistGlb = await r.arrayBuffer();
-                    $('fileInfo').textContent += ' (artist UVs available)';
-                }
-            } catch (e) { /* no artist UVs, that's fine */ }
-        }
-        $('artistMetricsRow').style.display = 'none';
         setStatus('File loaded. Choose parameterization method.', '');
     } catch (err) {
         setStatus(`Error: ${err.message}`, 'error');
@@ -384,22 +372,6 @@ $('paramBtn').addEventListener('click', async () => {
                         `<td>${m.success ? fmtSD(m.score) : '-'}</td>`;
                     tbody.appendChild(tr);
                 }
-                // Add artist row if available
-                if (state.artistGlb) {
-                    const tr = document.createElement('tr');
-                    tr.style.color = '#ffb347'; // orange for artist
-                    tr.style.cursor = 'pointer';
-                    tr.style.borderTop = '1px solid #555';
-                    tr.addEventListener('click', async () => {
-                        state.resultGlb = state.artistGlb;
-                        await loadGlb(state.artistGlb, true);
-                        setMetric('metMethod', 'Artist UVs');
-                        setStatus('Viewing: Artist UVs', '');
-                    });
-                    tr.innerHTML = `<td>\u{1F3A8} Artist UVs</td><td>-</td><td>-</td><td>-</td><td>ref</td>`;
-                    tbody.appendChild(tr);
-                }
-
                 $('comparisonPanel').style.display = 'block';
             } catch (e) {}
         }

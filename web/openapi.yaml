@@ -182,43 +182,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /api/artist-uvs/{filename}:
-    get:
-      summary: Retrieve artist UV reference mesh
-      description: >
-        Returns a pre-made artist UV GLB for the given filename, if one exists
-        in the Artist_UVs benchmark directories (Cut/ and Uncut/).
-      operationId: getArtistUvs
-      parameters:
-        - name: filename
-          in: path
-          required: true
-          description: Mesh filename to look up (e.g. "bunny.glb").
-          schema:
-            type: string
-            example: bunny.glb
-      responses:
-        "200":
-          description: Artist UV GLB mesh.
-          content:
-            model/gltf-binary:
-              schema:
-                type: string
-                format: binary
-        "404":
-          description: No artist UV found for the given filename.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-              example:
-                error: Artist UV not found for bunny.glb
-        "500":
-          description: Server error while converting or reading the file.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   /api/docs:
     get:
